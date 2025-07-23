@@ -1,4 +1,3 @@
-// src/ui/theme_editor_view.rs
 use crate::app::CypherApp;
 use crate::looper::NUM_LOOPERS;
 use egui::{collapsing_header::CollapsingHeader, Grid, ScrollArea, Window};
@@ -436,6 +435,41 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                         ui.color_edit_button_srgba(&mut theme.mod_amp_hot_color);
                                         ui.end_row();
                                     });
+                                });
+                            });
+
+                        CollapsingHeader::new("Slicer Window")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                let theme = &mut app.theme.slicer_window;
+                                Grid::new("slicer_theme").show(ui, |ui| {
+                                    ui.label("Background");
+                                    ui.color_edit_button_srgba(&mut theme.background);
+                                    ui.end_row();
+                                    ui.label("Waveform");
+                                    ui.color_edit_button_srgba(&mut theme.waveform_color);
+                                    ui.end_row();
+                                    ui.label("Waveform BG");
+                                    ui.color_edit_button_srgba(&mut theme.waveform_bg_color);
+                                    ui.end_row();
+                                    ui.label("Slice Marker");
+                                    ui.color_edit_button_srgba(&mut theme.slice_marker_color);
+                                    ui.end_row();
+                                    ui.label("Label");
+                                    ui.color_edit_button_srgba(&mut theme.label_color);
+                                    ui.end_row();
+                                    ui.label("Button BG");
+                                    ui.color_edit_button_srgba(&mut theme.button_bg);
+                                    ui.end_row();
+                                    ui.label("Slider Track");
+                                    ui.color_edit_button_srgba(&mut theme.slider_track_color);
+                                    ui.end_row();
+                                    ui.label("Slider Grab");
+                                    ui.color_edit_button_srgba(&mut theme.slider_grab_color);
+                                    ui.end_row();
+                                    ui.label("Text Edit BG");
+                                    ui.color_edit_button_srgba(&mut theme.text_edit_bg);
+                                    ui.end_row();
                                 });
                             });
                     });

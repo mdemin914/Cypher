@@ -1,4 +1,3 @@
-// src/app.rs
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SynthPresetRef};
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine, MidiMessage};
@@ -10,6 +9,7 @@ use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::SamplerKit;
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
 use crate::settings::{self, AppSettings};
+use crate::slicer;
 use crate::synth::{
     EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, SamplerParams, WavetableParams,
     WAVETABLE_SIZE,
@@ -106,12 +106,43 @@ impl EngineState {
     }
 }
 
+pub struct SlicerState {
+    pub source_audio: Option<SourceAudio>,
+    pub slice_regions: Vec<(usize, usize)>,
+    pub threshold: f32,
+    pub min_silence_ms: f32,
+    pub tail_ms: f32,
+    pub base_export_name: String,
+    pub export_parent_path: PathBuf,
+    pub export_new_folder_name: String,
+    pub view_start_sample: usize,
+    pub view_end_sample: usize,
+}
+
+impl SlicerState {
+    pub fn new() -> Self {
+        Self {
+            source_audio: None,
+            slice_regions: Vec::new(),
+            threshold: 0.012,
+            min_silence_ms: 1000.0,
+            tail_ms: 3000.0,
+            base_export_name: "slice".to_string(),
+            export_parent_path: PathBuf::new(),
+            export_new_folder_name: "New Slices".to_string(),
+            view_start_sample: 0,
+            view_end_sample: 0,
+        }
+    }
+}
+
 pub struct CypherApp {
     // --- App State ---
     pub options_window_open: bool,
     pub sample_pad_window_open: bool,
     pub synth_editor_window_open: bool,
     pub theme_editor_window_open: bool,
+    pub slicer_window_open: bool,
     pub library_path: Vec<String>,
     pub settings: AppSettings,
     pub library_view: LibraryView,
@@ -180,6 +211,9 @@ pub struct CypherApp {
     pub displayed_theory_notes: Vec<(u8, usize)>,
     pub last_recognized_chord_notes: BTreeSet<u8>,
 
+    // --- Slicer State ---
+    pub slicer_state: SlicerState,
+
     // --- Settings State (for UI) ---
     pub available_hosts: Vec<HostId>,
     pub selected_host_index: usize,
@@ -211,7 +245,7 @@ pub struct SourceAudio {
 }
 
 // Helper function to load and convert a WAV file to mono f32 samples, retaining its original SR.
-fn load_source_audio_file_with_sr(path: &Path) -> Result<SourceAudio> {
+pub fn load_source_audio_file_with_sr(path: &Path) -> Result<SourceAudio> {
     let file = BufReader::new(File::open(path)?);
     let source = Decoder::new(file)?;
 
@@ -292,6 +326,7 @@ impl CypherApp {
             sample_pad_window_open: false,
             synth_editor_window_open: false,
             theme_editor_window_open: false,
+            slicer_window_open: false,
             library_path: Vec::new(),
             library_view: LibraryView::Samples,
             asset_library: AssetLibrary::default(),
@@ -346,6 +381,7 @@ impl CypherApp {
             available_chord_styles: Vec::new(),
             displayed_theory_notes: Vec::new(),
             last_recognized_chord_notes: BTreeSet::new(),
+            slicer_state: SlicerState::new(),
             available_hosts,
             selected_host_index,
             midi_ports: midi::get_midi_ports()?,

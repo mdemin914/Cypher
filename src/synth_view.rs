@@ -1446,8 +1446,11 @@ fn draw_sampler_waveform_preview(app: &mut CypherApp, ui: &mut Ui, rect: Rect, e
 
         let data_guard_opt = engine_state.sample_data_for_ui
             .get(slot_to_draw)
-            .map(|rwlock| rwlock.read().unwrap())
-            // Fallback to the first loaded sample if the last triggered one is somehow empty
+            .and_then(|rwlock| {
+                let guard = rwlock.read().unwrap();
+                if !guard.is_empty() { Some(guard) } else { None }
+            })
+            // Fallback to the first loaded sample if the last triggered one is somehow empty or uninitialized
             .or_else(|| {
                 engine_state.sample_data_for_ui.iter().find_map(|rwlock| {
                     let guard = rwlock.read().unwrap();
@@ -1458,7 +1461,6 @@ fn draw_sampler_waveform_preview(app: &mut CypherApp, ui: &mut Ui, rect: Rect, e
                     }
                 })
             });
-
 
         // --- If a sample is loaded, draw it. Otherwise, show text. ---
         if let Some(data) = data_guard_opt {

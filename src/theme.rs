@@ -1,4 +1,3 @@
-// src/theme.rs
 use crate::looper::NUM_LOOPERS;
 use egui::{epaint, style, Color32, CornerRadius, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
@@ -140,6 +139,17 @@ fn default_piano_white_key_color() -> Color32 { Color32::from_gray(240) }
 fn default_piano_black_key_color() -> Color32 { Color32::from_gray(20) }
 fn default_piano_played_key_color() -> Color32 { Color32::from_rgb(255, 0, 0) }
 fn default_piano_outline_color() -> Color32 { Color32::from_gray(90) }
+
+// --- New: Slicer Window ---
+fn default_slicer_background() -> Color32 { Color32::from_gray(38) }
+fn default_slicer_waveform_color() -> Color32 { Color32::from_rgb(150, 150, 255) }
+fn default_slicer_waveform_bg_color() -> Color32 { Color32::from_gray(25) }
+fn default_slicer_slice_marker_color() -> Color32 { Color32::from_rgb(255, 215, 0) }
+fn default_slicer_label_color() -> Color32 { Color32::from_gray(200) }
+fn default_slicer_button_bg() -> Color32 { Color32::from_gray(80) }
+fn default_slicer_slider_track_color() -> Color32 { Color32::from_gray(50) }
+fn default_slicer_slider_grab_color() -> Color32 { Color32::from_rgb(190, 80, 255) }
+fn default_slicer_text_edit_bg() -> Color32 { Color32::from_gray(20) }
 
 // --- New Hierarchical Theme Structs ---
 
@@ -344,6 +354,22 @@ impl Default for SynthEditorTheme { fn default() -> Self { Self {
 } } }
 
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct SlicerWindowTheme {
+    #[serde(default = "default_slicer_background")] pub background: Color32,
+    #[serde(default = "default_slicer_waveform_color")] pub waveform_color: Color32,
+    #[serde(default = "default_slicer_waveform_bg_color")] pub waveform_bg_color: Color32,
+    #[serde(default = "default_slicer_slice_marker_color")] pub slice_marker_color: Color32,
+    #[serde(default = "default_slicer_label_color")] pub label_color: Color32,
+    #[serde(default = "default_slicer_button_bg")] pub button_bg: Color32,
+    #[serde(default = "default_slicer_slider_track_color")] pub slider_track_color: Color32,
+    #[serde(default = "default_slicer_slider_grab_color")] pub slider_grab_color: Color32,
+    #[serde(default = "default_slicer_text_edit_bg")] pub text_edit_bg: Color32,
+}
+impl Default for SlicerWindowTheme { fn default() -> Self { Self { background: default_slicer_background(), waveform_color: default_slicer_waveform_color(), waveform_bg_color: default_slicer_waveform_bg_color(), slice_marker_color: default_slicer_slice_marker_color(), label_color: default_slicer_label_color(), button_bg: default_slicer_button_bg(), slider_track_color: default_slicer_slider_track_color(), slider_grab_color: default_slicer_slider_grab_color(), text_edit_bg: default_slicer_text_edit_bg(), } } }
+
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
 pub struct Theme {
@@ -362,6 +388,7 @@ pub struct Theme {
     pub sampler_pad_window: SamplerPadWindowTheme,
     pub synth_editor_window: SynthEditorTheme,
     pub piano_keys: PianoKeyTheme,
+    pub slicer_window: SlicerWindowTheme,
 }
 
 

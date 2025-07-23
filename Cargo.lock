@@ -927,6 +927,7 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
+ "hound",
  "midir",
  "once_cell",
  "rand",

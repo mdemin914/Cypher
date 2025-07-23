@@ -1,4 +1,3 @@
-// src/ui/mixer_view.rs
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
 use crate::looper::NUM_LOOPERS;
@@ -26,6 +25,7 @@ fn volume_fader(
     peak_level: f32,
     theme: &crate::theme::Theme,
     track_color: Color32,
+    meter_color: Color32,
 ) -> Response {
     let desired_height = ui.available_height().max(0.0);
     let desired_size = vec2(20.0, desired_height);
@@ -68,7 +68,7 @@ fn volume_fader(
             let color = if post_fader_peak > 1.0 {
                 theme.mixer.meter_clip_color
             } else {
-                theme.mixer.meter_normal_color
+                meter_color // Use the passed-in meter color
             };
             painter.rect_filled(bar_rect, Rounding::from(3.0), color);
         }
@@ -253,6 +253,7 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
             app.displayed_peak_levels[track_id],
             &app.theme,
             track_color,
+            track_color, // Pass track_color for the meter as well
         );
     });
 }
@@ -260,6 +261,7 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
 fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
     let mut vol = app.master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
     let neutral_color = app.theme.mixer.fader_track_bg;
+    let master_fader_bg = app.theme.mixer.fader_track_bg.gamma_multiply(3.5);
 
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.label(RichText::new("Master").color(app.theme.mixer.label_color));
@@ -370,7 +372,8 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                 &mut threshold,
                 0.0,
                 &app.theme,
-                neutral_color,
+                master_fader_bg,
+                app.theme.mixer.meter_normal_color, // Use global theme color
             ).dragged() {
                 app.send_command(AudioCommand::SetLimiterThreshold(threshold));
             }
@@ -382,7 +385,8 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                 &mut vol,
                 app.displayed_master_peak_level,
                 &app.theme,
-                neutral_color,
+                master_fader_bg,
+                app.theme.mixer.meter_normal_color, // Use global theme color
             ).dragged() {
                 app.send_command(AudioCommand::SetMasterVolume(vol));
             }
