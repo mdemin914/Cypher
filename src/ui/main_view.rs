@@ -1,10 +1,10 @@
-// src/ui/main_view.rs
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
 use crate::looper::{LooperState, NUM_LOOPERS};
 use crate::synth_view;
 use crate::ui;
 use crate::ui::mixer_view::horizontal_volume_fader;
+use crate::ui::slicer_view::draw_slicer_window;
 use egui::{
     epaint::{self, PathShape, StrokeKind},
     vec2, Align, Align2, Button, CentralPanel, Color32, Frame, Id, Layout, Margin, Pos2,
@@ -27,6 +27,9 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     if app.theme_editor_window_open {
         ui::draw_theme_editor_window(app, ctx);
     }
+    if app.slicer_window_open {
+        draw_slicer_window(app, ctx);
+    }
 
     TopBottomPanel::top("options_bar")
         .frame(Frame::none().fill(app.theme.top_bar.background))
@@ -39,6 +42,10 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
                 let button = Button::new("Theme").fill(app.theme.top_bar.button_bg);
                 if ui.add(button).clicked() {
                     app.theme_editor_window_open = true;
+                }
+                let button = Button::new("Slicer").fill(app.theme.top_bar.button_bg);
+                if ui.add(button).clicked() {
+                    app.slicer_window_open = true;
                 }
 
                 ui.separator();
