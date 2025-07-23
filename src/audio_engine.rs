@@ -1,4 +1,3 @@
-// src/audio_engine.rs
 use crate::looper::{LooperState, SharedLooperState, WAVEFORM_DOWNSAMPLE_SIZE, NUM_LOOPERS};
 use crate::mixer::TrackMixerState;
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
@@ -8,6 +7,7 @@ use crate::synth::{
 };
 use crate::wavetable_engine;
 use anyhow::Result;
+use hound;
 use ringbuf::HeapConsumer;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
@@ -15,6 +15,7 @@ use rubato::{
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::thread;
 use std::time::Instant;
 
 const LOOPER_ARM_THRESHOLD: f32 = 0.05;
@@ -160,6 +161,10 @@ pub enum AudioCommand {
     PlayTransport,
     PauseTransport,
     ClearAllAndPlay,
+    StartOutputRecording,
+    StopOutputRecording {
+        output_path: PathBuf,
+    },
 }
 
 pub struct AudioEngine {
@@ -199,9 +204,48 @@ pub struct AudioEngine {
     engine_volumes: [Arc<AtomicU32>; 2],
     engine_peak_meters: [Arc<AtomicU32>; 2],
     bpm_rounding: bool,
+    output_recording_buffer: Option<Vec<f32>>,
     // Buffers for block-based processing
     engine_0_buffer: Vec<f32>,
     engine_1_buffer: Vec<f32>,
+}
+
+fn write_wav_file(path: &Path, audio_buffer: &[f32], sample_rate: f32) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: sample_rate as u32,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)?;
+    for &sample in audio_buffer {
+        let amplitude = i16::MAX as f32;
+        let sample_i16 = (sample * amplitude) as i16;
+        writer.write_sample(sample_i16)?; // Left channel
+        writer.write_sample(sample_i16)?; // Right channel
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+fn trim_silence(mut audio_buffer: Vec<f32>) -> Vec<f32> {
+    const SILENCE_THRESHOLD: f32 = 0.001;
+    let start_pos = audio_buffer
+        .iter()
+        .position(|&s| s.abs() > SILENCE_THRESHOLD)
+        .unwrap_or(0);
+    let end_pos = audio_buffer
+        .iter()
+        .rposition(|&s| s.abs() > SILENCE_THRESHOLD)
+        .unwrap_or(0);
+
+    if start_pos >= end_pos {
+        return Vec::new();
+    }
+
+    audio_buffer.truncate(end_pos + 1);
+    audio_buffer.drain(0..start_pos);
+    audio_buffer
 }
 
 impl AudioEngine {
@@ -290,6 +334,7 @@ impl AudioEngine {
             engine_volumes,
             engine_peak_meters,
             bpm_rounding,
+            output_recording_buffer: None,
             // Initialize with a default size; will be resized in process_buffer
             engine_0_buffer: vec![0.0; 512],
             engine_1_buffer: vec![0.0; 512],
@@ -301,6 +346,27 @@ impl AudioEngine {
     pub fn handle_commands(&mut self) {
         while let Some(command) = self.command_consumer.pop() {
             match command {
+                AudioCommand::StartOutputRecording => {
+                    self.output_recording_buffer = Some(Vec::new());
+                }
+                AudioCommand::StopOutputRecording { output_path } => {
+                    if let Some(buffer) = self.output_recording_buffer.take() {
+                        let sample_rate = self.sample_rate;
+                        thread::spawn(move || {
+                            let trimmed_buffer = trim_silence(buffer);
+                            if trimmed_buffer.is_empty() {
+                                println!("Recording is empty after trimming silence. Not saved.");
+                                return;
+                            }
+
+                            if let Err(e) = write_wav_file(&output_path, &trimmed_buffer, sample_rate) {
+                                eprintln!("Failed to save recording: {}", e);
+                            } else {
+                                println!("Recording saved to {}", output_path.display());
+                            }
+                        });
+                    }
+                }
                 AudioCommand::PlayTransport => {
                     self.transport_state = TransportState::Playing;
                     self.transport_is_playing.store(true, Ordering::Relaxed);
@@ -861,6 +927,10 @@ impl AudioEngine {
                 self.update_waveform_summary(id);
                 self.loopers[id].samples_since_waveform_update = 0;
             }
+        }
+
+        if let Some(rec_buffer) = &mut self.output_recording_buffer {
+            rec_buffer.extend_from_slice(&output_buffer);
         }
 
         for i in 0..2 {

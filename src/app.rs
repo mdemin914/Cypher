@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 use walkdir::WalkDir;
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -143,6 +144,8 @@ pub struct CypherApp {
     pub synth_editor_window_open: bool,
     pub theme_editor_window_open: bool,
     pub slicer_window_open: bool,
+    pub is_recording_output: bool,
+    pub recording_notification: Option<(String, Instant)>,
     pub library_path: Vec<String>,
     pub settings: AppSettings,
     pub library_view: LibraryView,
@@ -327,6 +330,8 @@ impl CypherApp {
             synth_editor_window_open: false,
             theme_editor_window_open: false,
             slicer_window_open: false,
+            is_recording_output: false,
+            recording_notification: None,
             library_path: Vec::new(),
             library_view: LibraryView::Samples,
             asset_library: AssetLibrary::default(),
@@ -1793,6 +1798,12 @@ impl eframe::App for CypherApp {
         // --- State Updates ---
         // Must be called before any UI is drawn to ensure the display is up to date.
         self.update_theory_display();
+
+        if let Some((_, time)) = self.recording_notification {
+            if time.elapsed() > std::time::Duration::from_secs(5) {
+                self.recording_notification = None;
+            }
+        }
 
         let visuals: egui::Visuals = (&self.theme).into();
         ctx.set_visuals(visuals);

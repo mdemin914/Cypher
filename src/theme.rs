@@ -39,6 +39,8 @@ fn default_transport_play_active_bg() -> Color32 { Color32::from_rgb(0, 120, 0) 
 fn default_transport_clear_bg() -> Color32 { Color32::from_rgb(180, 50, 0) }
 fn default_transport_label_color() -> Color32 { Color32::from_gray(200) }
 fn default_transport_mute_active_bg() -> Color32 { Color32::from_rgb(0, 150, 255) } // New color for mute
+fn default_record_button_bg() -> Color32 { Color32::from_gray(55) }
+fn default_record_active_bg() -> Color32 { Color32::from_rgb(180, 0, 0) }
 
 // Loopers
 fn default_looper_empty_bg() -> Color32 { Color32::from_gray(40) }
@@ -200,8 +202,10 @@ pub struct TransportControlTheme {
     #[serde(default = "default_transport_mute_active_bg")] pub mute_active_bg: Color32,
     #[serde(default = "default_transport_clear_bg")] pub clear_button_bg: Color32,
     #[serde(default = "default_transport_label_color")] pub label_color: Color32,
+    #[serde(default = "default_record_button_bg")] pub record_button_bg: Color32,
+    #[serde(default = "default_record_active_bg")] pub record_active_bg: Color32,
 }
-impl Default for TransportControlTheme { fn default() -> Self { Self { panel_background: default_transport_panel_bg(), button_bg: default_transport_button_bg(), play_active_bg: default_transport_play_active_bg(), mute_active_bg: default_transport_mute_active_bg(), clear_button_bg: default_transport_clear_bg(), label_color: default_transport_label_color() } } }
+impl Default for TransportControlTheme { fn default() -> Self { Self { panel_background: default_transport_panel_bg(), button_bg: default_transport_button_bg(), play_active_bg: default_transport_play_active_bg(), mute_active_bg: default_transport_mute_active_bg(), clear_button_bg: default_transport_clear_bg(), label_color: default_transport_label_color(), record_button_bg: default_record_button_bg(), record_active_bg: default_record_active_bg() } } }
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

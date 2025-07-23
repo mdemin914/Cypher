@@ -17,6 +17,7 @@ anyhow = "1.0"
 midir = "0.9.1"
 rand = "0.8.5"
 rayon = "1.8.0" # Added for parallel processing
+chrono = "0.4" # Added for timestamps
 
 # Sampler
 rfd = "0.14.1"

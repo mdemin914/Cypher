@@ -146,6 +146,12 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     ui.label("Clear BG");
                                     ui.color_edit_button_srgba(&mut app.theme.transport_controls.clear_button_bg);
                                     ui.end_row();
+                                    ui.label("Record BG");
+                                    ui.color_edit_button_srgba(&mut app.theme.transport_controls.record_button_bg);
+                                    ui.end_row();
+                                    ui.label("Record Active BG");
+                                    ui.color_edit_button_srgba(&mut app.theme.transport_controls.record_active_bg);
+                                    ui.end_row();
                                     ui.label("Label");
                                     ui.color_edit_button_srgba(&mut app.theme.transport_controls.label_color);
                                     ui.end_row();

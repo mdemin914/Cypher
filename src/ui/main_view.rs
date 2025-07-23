@@ -1,10 +1,12 @@
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
 use crate::looper::{LooperState, NUM_LOOPERS};
+use crate::settings;
 use crate::synth_view;
 use crate::ui;
 use crate::ui::mixer_view::horizontal_volume_fader;
 use crate::ui::slicer_view::draw_slicer_window;
+use chrono::Local;
 use egui::{
     epaint::{self, PathShape, StrokeKind},
     vec2, Align, Align2, Button, CentralPanel, Color32, Frame, Id, Layout, Margin, Pos2,
@@ -13,6 +15,7 @@ use egui::{
 use std::f32::consts::TAU;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     if app.options_window_open {
@@ -29,6 +32,20 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     }
     if app.slicer_window_open {
         draw_slicer_window(app, ctx);
+    }
+
+    // --- Draw Notification Overlay ---
+    if let Some((msg, _)) = &app.recording_notification {
+        egui::Area::new(Id::new("recording_notification_area"))
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 50.0))
+            .show(ctx, |ui| {
+                let frame = Frame::popup(ui.style())
+                    .fill(Color32::from_black_alpha(200))
+                    .stroke(Stroke::new(1.0, Color32::WHITE));
+                frame.show(ui, |ui| {
+                    ui.label(RichText::new(msg).color(Color32::WHITE).size(16.0));
+                });
+            });
     }
 
     TopBottomPanel::top("options_bar")
@@ -428,6 +445,35 @@ fn draw_transport_panel(app: &mut CypherApp, ui: &mut Ui) {
                     .fill(app.theme.transport_controls.clear_button_bg);
                 if ui.add_sized(button_size, clear_button).clicked() {
                     app.send_command(AudioCommand::ClearAllAndPlay);
+                }
+
+                // --- Record Button ---
+                let record_text = if app.is_recording_output {
+                    "■ REC"
+                } else {
+                    "● REC"
+                };
+                let record_color = if app.is_recording_output {
+                    app.theme.transport_controls.record_active_bg
+                } else {
+                    app.theme.transport_controls.record_button_bg
+                };
+
+                let record_button = Button::new(RichText::new(record_text).monospace()).fill(record_color);
+                if ui.add_sized(button_size, record_button).clicked() {
+                    app.is_recording_output = !app.is_recording_output;
+                    if app.is_recording_output {
+                        app.send_command(AudioCommand::StartOutputRecording);
+                    } else {
+                        if let Some(config_dir) = settings::get_config_dir() {
+                            let rec_dir = config_dir.join("LiveRecordings");
+                            let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                            let filename = format!("LiveRec_{}.wav", timestamp);
+                            let path = rec_dir.join(filename);
+                            app.send_command(AudioCommand::StopOutputRecording { output_path: path.clone() });
+                            app.recording_notification = Some((format!("Saved to {}", path.display()), Instant::now()));
+                        }
+                    }
                 }
             });
         });
