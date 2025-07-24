@@ -1,10 +1,10 @@
-use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SynthPresetRef};
+use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine, MidiMessage};
 use crate::audio_io;
 use crate::looper::{SharedLooperState, NUM_LOOPERS};
 use crate::midi;
-use crate::mixer::TrackMixerState;
+use crate::mixer::{MixerState, MixerTrackState};
 use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::SamplerKit;
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
@@ -19,6 +19,7 @@ use crate::theory::{self, ChordStyle, Scale};
 use crate::ui;
 use crate::wavetable_engine::{self, WavetableEnginePreset, WavetableSet, WavetableSource};
 use anyhow::{anyhow, Result};
+use chrono::Local;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, HostId, Stream};
 use egui::Color32;
@@ -30,6 +31,7 @@ use rodio::Decoder;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::File;
@@ -46,7 +48,19 @@ pub enum LibraryView {
     Samples,
     Synths,
     Kits,
+    Sessions,
     EightyEightKeys,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SessionData {
+    pub mixer_state: MixerState,
+    pub synth_preset_path: Option<PathBuf>,
+    pub sampler_kit_path: Option<PathBuf>,
+    pub is_input_armed: bool,
+    pub is_input_monitored: bool,
+    pub transport_len_samples: usize,
+    pub original_sample_rate: u32,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -154,6 +168,7 @@ pub struct CypherApp {
     pub available_themes: Vec<(String, PathBuf)>,
     pub active_synth_section: [SynthUISection; 2],
     pub bpm_rounding_setting_changed_unapplied: bool,
+    pub current_session_path: Option<PathBuf>,
 
     // --- Audio Engine Resources (managed) ---
     _input_stream: Option<Stream>,
@@ -178,7 +193,7 @@ pub struct CypherApp {
     pub live_midi_notes: Arc<RwLock<BTreeSet<u8>>>,
 
     // --- Mixer State ---
-    pub track_mixer_state: Arc<RwLock<TrackMixerState>>,
+    pub track_mixer_state: Arc<RwLock<MixerState>>,
     pub peak_meters: Arc<[AtomicU32; NUM_LOOPERS]>,
     pub displayed_peak_levels: [f32; NUM_LOOPERS],
     pub input_peak_meter: Arc<AtomicU32>,
@@ -304,7 +319,7 @@ impl CypherApp {
             .and_then(|bs| buffer_sizes.iter().position(|&b| b == *bs))
             .unwrap_or(4);
 
-        let track_mixer_state = Arc::new(RwLock::new(TrackMixerState::default()));
+        let track_mixer_state = Arc::new(RwLock::new(MixerState::default()));
         let peak_meters = Arc::new(std::array::from_fn(|_| AtomicU32::new(0)));
         let input_peak_meter = Arc::new(AtomicU32::new(0));
         let cpu_load = Arc::new(AtomicU32::new(0));
@@ -339,6 +354,7 @@ impl CypherApp {
             available_themes: Vec::new(),
             active_synth_section: [SynthUISection::Wavetable; 2],
             bpm_rounding_setting_changed_unapplied: false,
+            current_session_path: None,
             _input_stream: None,
             _output_stream: None,
             _midi_connection: None,
@@ -596,6 +612,8 @@ impl CypherApp {
             let samples_dir = config_dir.join("Samples");
             let presets_dir = config_dir.join("SynthPresets");
             let kits_dir = config_dir.join("Kits");
+            let sessions_dir = config_dir.join("Sessions");
+
             for entry in WalkDir::new(&samples_dir)
                 .into_iter()
                 .filter_map(|e| e.ok())
@@ -649,6 +667,18 @@ impl CypherApp {
                             self.asset_library
                                 .kit_root
                                 .insert_asset(&segments, Asset::SamplerKit(kit_ref));
+                        }
+                    }
+                }
+            }
+            if sessions_dir.is_dir() {
+                for entry in WalkDir::new(&sessions_dir).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+                    if entry.file_type().is_dir() {
+                        let segments = vec![entry.file_name().to_string_lossy().to_string()];
+                        if let Some(session_ref) = SessionRef::new(entry.path().to_path_buf()) {
+                            self.asset_library
+                                .session_root
+                                .insert_asset(&segments, Asset::Session(session_ref));
                         }
                     }
                 }
@@ -989,8 +1019,8 @@ impl CypherApp {
 
     pub fn send_command(&self, command: AudioCommand) {
         if let Some(sender) = &self.command_sender {
-            if sender.send(command).is_err() {
-                eprintln!("Failed to send command: audio thread may be offline.");
+            if let Err(e) = sender.send(command) {
+                eprintln!("Failed to send command: {}. Audio thread may be offline.", e);
             }
         }
     }
@@ -1498,6 +1528,7 @@ impl CypherApp {
 
     pub fn initialize_new_preset(&mut self) {
         self.settings.last_synth_preset = None;
+        self.current_session_path = None; // A new preset means it's an unsaved session
 
         // We no longer stop/start audio. Instead, we send commands to reset the synth engines.
         for engine_index in 0..2 {
@@ -1790,6 +1821,146 @@ impl CypherApp {
                 }
             }
         }
+    }
+
+    pub fn save_session(&mut self, path_override: Option<PathBuf>) {
+        let session_path = match path_override {
+            Some(p) => p,
+            None => {
+                if let Some(config_dir) = settings::get_config_dir() {
+                    let sessions_dir = config_dir.join("Sessions");
+                    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                    let filename = format!("Session_{}", timestamp);
+                    if let Some(path) = FileDialog::new()
+                        .set_directory(&sessions_dir)
+                        .set_file_name(&filename)
+                        .save_file()
+                    {
+                        path
+                    } else {
+                        return; // User cancelled dialog
+                    }
+                } else {
+                    return;
+                }
+            }
+        };
+
+        let session_dir = session_path.with_extension("");
+
+        if let Err(e) = fs::create_dir_all(&session_dir) {
+            eprintln!("Failed to create session directory: {}", e);
+            return;
+        }
+
+        if let Some(config_dir) = settings::get_config_dir() {
+            let mixer_state = MixerState {
+                tracks: self.track_mixer_state.read().unwrap().tracks,
+                master_volume_m_u32: self.master_volume.load(Ordering::Relaxed),
+                limiter_is_active: self.limiter_is_active.load(Ordering::Relaxed),
+                limiter_threshold_m_u32: self.limiter_threshold.load(Ordering::Relaxed),
+                limiter_release_mode: self.limiter_release_mode,
+                limiter_release_ms_m_u32: self.limiter_release_ms.load(Ordering::Relaxed),
+                limiter_release_sync_rate_m_u32: self.limiter_release_sync_rate.load(Ordering::Relaxed),
+            };
+
+            let synth_preset_path = self.settings.last_synth_preset.as_ref().and_then(|p| {
+                p.strip_prefix(&config_dir).ok().map(|rp| rp.to_path_buf())
+            });
+            let sampler_kit_path = self.settings.last_sampler_kit.as_ref().and_then(|p| {
+                p.strip_prefix(&config_dir).ok().map(|rp| rp.to_path_buf())
+            });
+
+            let session_data = SessionData {
+                mixer_state,
+                synth_preset_path,
+                sampler_kit_path,
+                is_input_armed: self.audio_input_is_armed.load(Ordering::Relaxed),
+                is_input_monitored: self.audio_input_is_monitored.load(Ordering::Relaxed),
+                transport_len_samples: self.transport_len_samples.load(Ordering::Relaxed),
+                original_sample_rate: self.active_sample_rate,
+            };
+
+            let json_path = session_dir.join("session.json");
+            if let Ok(json_string) = serde_json::to_string_pretty(&session_data) {
+                if let Err(e) = fs::write(&json_path, json_string) {
+                    eprintln!("Failed to write session.json: {}", e);
+                    return;
+                }
+            } else {
+                eprintln!("Failed to serialize session data.");
+                return;
+            }
+
+            self.send_command(AudioCommand::SaveSessionAudio { session_path: session_dir.clone() });
+            self.current_session_path = Some(session_dir);
+            self.rescan_asset_library();
+        }
+    }
+
+    pub fn load_session(&mut self, path: &Path) {
+        let json_path = path.join("session.json");
+        let json_string = match fs::read_to_string(&json_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to read session file {}: {}", json_path.display(), e);
+                return;
+            }
+        };
+
+        let session_data: SessionData = match serde_json::from_str(&json_string) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Failed to parse session file {}: {}", json_path.display(), e);
+                return;
+            }
+        };
+
+        // --- Begin state restoration ---
+        self.send_command(AudioCommand::ClearAll);
+
+        // Send the entire mixer state to the audio thread for atomic update
+        let mixer_state = session_data.mixer_state.clone();
+        self.send_command(AudioCommand::SetMixerState(mixer_state));
+
+        // Also update the UI's direct view of the state
+        *self.track_mixer_state.write().unwrap() = session_data.mixer_state.clone();
+        self.master_volume.store(session_data.mixer_state.master_volume_m_u32, Ordering::Relaxed);
+        self.limiter_is_active.store(session_data.mixer_state.limiter_is_active, Ordering::Relaxed);
+        self.limiter_threshold.store(session_data.mixer_state.limiter_threshold_m_u32, Ordering::Relaxed);
+        self.limiter_release_mode = session_data.mixer_state.limiter_release_mode; // This was the missing line
+        self.limiter_release_ms.store(session_data.mixer_state.limiter_release_ms_m_u32, Ordering::Relaxed);
+        self.limiter_release_sync_rate.store(session_data.mixer_state.limiter_release_sync_rate_m_u32, Ordering::Relaxed);
+
+        if let Some(relative_path) = session_data.synth_preset_path {
+            if let Some(config_dir) = settings::get_config_dir() {
+                let full_path = config_dir.join(relative_path);
+                self.load_preset_from_path(&full_path);
+            }
+        }
+        if let Some(relative_path) = session_data.sampler_kit_path {
+            if let Some(config_dir) = settings::get_config_dir() {
+                let full_path = config_dir.join(relative_path);
+                self.load_kit(&full_path);
+            }
+        }
+
+        self.audio_input_is_armed.store(session_data.is_input_armed, Ordering::Relaxed);
+        self.audio_input_is_monitored.store(session_data.is_input_monitored, Ordering::Relaxed);
+
+        for i in 0..NUM_LOOPERS {
+            let loop_filename = format!("loop_{}.wav", i);
+            let loop_path = path.join(loop_filename);
+            if loop_path.exists() {
+                self.send_command(AudioCommand::LoadLoopAudio {
+                    looper_index: i,
+                    path: loop_path,
+                    original_sample_rate: session_data.original_sample_rate,
+                });
+            }
+        }
+        self.send_command(AudioCommand::SetTransportLen(session_data.transport_len_samples));
+        self.current_session_path = Some(path.to_path_buf());
     }
 }
 

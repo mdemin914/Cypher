@@ -1,4 +1,3 @@
-// src/ui/library_view.rs
 use crate::app::{CypherApp, LibraryView};
 use crate::asset::{Asset, AssetRef, SampleRef};
 use crate::audio_engine::AudioCommand;
@@ -38,8 +37,12 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             let kit_bg = if app.library_view == LibraryView::Kits { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
             if ui.add(Button::new("Kits").fill(kit_bg)).clicked() { app.library_view = LibraryView::Kits; app.library_path.clear(); }
 
+            let session_bg = if app.library_view == LibraryView::Sessions { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
+            if ui.add(Button::new("Sessions").fill(session_bg)).clicked() { app.library_view = LibraryView::Sessions; app.library_path.clear(); }
+
             let keys_bg = if app.library_view == LibraryView::EightyEightKeys { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
             if ui.add(Button::new("88Keys").fill(keys_bg)).clicked() { app.library_view = LibraryView::EightyEightKeys; app.library_path.clear(); }
+
 
             // --- Path/Back button only for asset views ---
             if app.library_view != LibraryView::EightyEightKeys {
@@ -55,6 +58,7 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                         LibraryView::Samples => "Samples",
                         LibraryView::Synths => "Synths",
                         LibraryView::Kits => "Kits",
+                        LibraryView::Sessions => "Sessions",
                         _ => "", // Should not happen
                     }.to_string()
                 } else {
@@ -75,6 +79,7 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                 LibraryView::Samples => &app.asset_library.sample_root,
                 LibraryView::Synths => &app.asset_library.synth_root,
                 LibraryView::Kits => &app.asset_library.kit_root,
+                LibraryView::Sessions => &app.asset_library.session_root,
                 _ => return,
             };
             let mut current_folder = category_root;
@@ -90,6 +95,7 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
 
             let mut preset_to_load: Option<PathBuf> = None;
             let mut kit_to_load: Option<PathBuf> = None;
+            let mut session_to_load: Option<PathBuf> = None;
             let theme = app.theme.clone();
 
             ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
@@ -136,12 +142,16 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                                 Asset::SamplerKit(kit_ref) => {
                                     draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click_and_drag(), &theme)
                                 }
+                                Asset::Session(session_ref) => {
+                                    draw_asset_card(ui, session_ref, "💾", asset.clone(), Sense::click(), &theme)
+                                }
                             };
 
                             if response.clicked() {
                                 match asset {
                                     Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
                                     Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
+                                    Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
                                     _ => {}
                                 }
                             }
@@ -163,6 +173,9 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                 app.load_kit(&path);
                 app.send_command(AudioCommand::ActivateSampler);
                 app.send_command(AudioCommand::DeactivateSynth);
+            }
+            if let Some(path) = session_to_load {
+                app.load_session(&path);
             }
         }
     });

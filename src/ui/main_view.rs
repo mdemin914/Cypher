@@ -67,6 +67,18 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
 
                 ui.separator();
 
+                let save_button = Button::new("Save").fill(app.theme.top_bar.session_button_bg);
+                if ui.add(save_button).clicked() {
+                    app.save_session(app.current_session_path.clone());
+                }
+
+                let save_as_button = Button::new("Save As...").fill(app.theme.top_bar.session_save_as_button_bg);
+                if ui.add(save_as_button).clicked() {
+                    app.save_session(None);
+                }
+
+                ui.separator();
+
                 let len = app.transport_len_samples.load(Ordering::Relaxed);
                 let sr = app.active_sample_rate;
 
@@ -181,17 +193,29 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
                 });
 
                 if !was_already_pressed {
-                    let transport_running = app.transport_len_samples.load(Ordering::Relaxed) > 0;
+                    let is_playing = app.transport_is_playing.load(Ordering::Relaxed);
+                    let transport_has_started = app.transport_len_samples.load(Ordering::Relaxed) > 0;
+
                     match state {
                         LooperState::Empty => {
-                            if transport_running {
-                                app.send_command(AudioCommand::ToggleLooper(id));
-                            } else {
+                            if !transport_has_started {
+                                // SCENARIO: Blank slate. Always allow arming the first looper.
                                 app.send_command(AudioCommand::ArmLooper(id));
+                            } else if is_playing {
+                                // SCENARIO: Session in progress. Only allow recording new loops while playing.
+                                app.send_command(AudioCommand::ToggleLooper(id));
                             }
                         }
-                        LooperState::Armed => { app.send_command(AudioCommand::ClearLooper(id)); }
-                        _ => { app.send_command(AudioCommand::ToggleLooper(id)); }
+                        LooperState::Armed => {
+                            // Clicking an armed looper always cancels the arm.
+                            app.send_command(AudioCommand::ClearLooper(id));
+                        }
+                        _ => { // Covers Playing, Overdubbing, and Stopped states
+                            // Any other action (like toggling overdub) can only happen if playing.
+                            if is_playing {
+                                app.send_command(AudioCommand::ToggleLooper(id));
+                            }
+                        }
                     }
                 }
             } else {
@@ -420,7 +444,7 @@ fn draw_transport_panel(app: &mut CypherApp, ui: &mut Ui) {
                 let play_button = Button::new(RichText::new(play_text).monospace()).fill(play_color);
                 if ui.add_sized(button_size, play_button).clicked() {
                     if is_playing {
-                        app.send_command(AudioCommand::PauseTransport);
+                        app.send_command(AudioCommand::StopTransport);
                     } else {
                         app.send_command(AudioCommand::PlayTransport);
                     }

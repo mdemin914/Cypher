@@ -21,6 +21,9 @@ fn default_top_bar_separator_color() -> Color32 { Color32::from_gray(80) }
 fn default_transport_bar_fill() -> Color32 { Color32::from_rgb(100, 100, 200) }
 fn default_transport_bar_background() -> Color32 { Color32::from_gray(20) }
 fn default_xrun_text_color() -> Color32 { Color32::RED }
+fn default_session_button_bg() -> Color32 { Color32::from_rgb(0, 100, 100) }
+fn default_session_save_as_button_bg() -> Color32 { Color32::from_rgb(0, 80, 130) }
+
 
 // Instrument Panel
 fn default_instrument_panel_bg() -> Color32 { Color32::from_gray(45) }
@@ -176,8 +179,10 @@ pub struct TopBarTheme {
     #[serde(default = "default_transport_bar_fill")] pub transport_bar_fill: Color32,
     #[serde(default = "default_transport_bar_background")] pub transport_bar_background: Color32,
     #[serde(default = "default_xrun_text_color")] pub xrun_text_color: Color32,
+    #[serde(default = "default_session_button_bg")] pub session_button_bg: Color32,
+    #[serde(default = "default_session_save_as_button_bg")] pub session_save_as_button_bg: Color32,
 }
-impl Default for TopBarTheme { fn default() -> Self { Self { background: default_top_bar_background(), button_bg: default_top_bar_button_bg(), text_color: default_top_bar_text_color(), separator_color: default_top_bar_separator_color(), transport_bar_fill: default_transport_bar_fill(), transport_bar_background: default_transport_bar_background(), xrun_text_color: default_xrun_text_color() } } }
+impl Default for TopBarTheme { fn default() -> Self { Self { background: default_top_bar_background(), button_bg: default_top_bar_button_bg(), text_color: default_top_bar_text_color(), separator_color: default_top_bar_separator_color(), transport_bar_fill: default_transport_bar_fill(), transport_bar_background: default_transport_bar_background(), xrun_text_color: default_xrun_text_color(), session_button_bg: default_session_button_bg(), session_save_as_button_bg: default_session_save_as_button_bg() } } }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]

@@ -51,7 +51,8 @@ pub fn get_config_dir() -> Option<PathBuf> {
                 &app_settings_dir.join("SynthPresets"),
                 &app_settings_dir.join("Kits"),
                 &app_settings_dir.join("Themes"),
-                &app_settings_dir.join("LiveRecordings"), // Added this line
+                &app_settings_dir.join("LiveRecordings"),
+                &app_settings_dir.join("Sessions"), // Added this line
             ] {
                 if !dir.exists() {
                     if let Err(e) = fs::create_dir_all(dir) {

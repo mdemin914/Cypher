@@ -15,6 +15,7 @@ pub enum Asset {
     Sample(SampleRef),
     SynthPreset(SynthPresetRef),
     SamplerKit(SamplerKitRef),
+    Session(SessionRef),
 }
 
 impl Default for Asset {
@@ -36,6 +37,7 @@ impl AssetRef for Asset {
             Asset::Sample(r) => &r.name,
             Asset::SynthPreset(r) => &r.name,
             Asset::SamplerKit(r) => &r.name,
+            Asset::Session(r) => &r.name,
         }
     }
     fn path(&self) -> &PathBuf {
@@ -43,6 +45,7 @@ impl AssetRef for Asset {
             Asset::Sample(r) => &r.path,
             Asset::SynthPreset(r) => &r.path,
             Asset::SamplerKit(r) => &r.path,
+            Asset::Session(r) => &r.path,
         }
     }
 }
@@ -131,6 +134,25 @@ impl SamplerKitRef {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct SessionRef {
+    pub id: egui::Id,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl AssetRef for SessionRef {
+    fn name(&self) -> &str { &self.name }
+    fn path(&self) -> &PathBuf { &self.path }
+}
+
+impl SessionRef {
+    pub fn new(path: PathBuf) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        Some(Self { id: new_id(), name, path })
+    }
+}
+
 
 #[derive(Default, Debug, Clone)]
 pub struct LibraryFolder {
@@ -169,6 +191,7 @@ pub struct AssetLibrary {
     pub sample_root: LibraryFolder,
     pub synth_root: LibraryFolder,
     pub kit_root: LibraryFolder,
+    pub session_root: LibraryFolder,
 }
 
 impl AssetLibrary {
@@ -176,5 +199,6 @@ impl AssetLibrary {
         self.sample_root.clear();
         self.synth_root.clear();
         self.kit_root.clear();
+        self.session_root.clear();
     }
 }

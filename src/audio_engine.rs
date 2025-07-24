@@ -1,5 +1,5 @@
 use crate::looper::{LooperState, SharedLooperState, WAVEFORM_DOWNSAMPLE_SIZE, NUM_LOOPERS};
-use crate::mixer::TrackMixerState;
+use crate::mixer::{MixerState, MixerTrackState};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
 use crate::synth::{
     AdsrSettings, Engine, EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, SamplerParams,
@@ -9,9 +9,13 @@ use crate::wavetable_engine;
 use anyhow::Result;
 use hound;
 use ringbuf::HeapConsumer;
+use rodio::source::Source;
+use rodio::Decoder;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -106,7 +110,7 @@ pub struct MidiMessage {
     pub data2: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AudioCommand {
     ToggleLooper(usize),
     ArmLooper(usize),
@@ -159,12 +163,23 @@ pub enum AudioCommand {
     SetLimiterReleaseMs(f32),
     SetLimiterReleaseSync(f32),
     PlayTransport,
-    PauseTransport,
+    StopTransport,
     ClearAllAndPlay,
+    ClearAll,
     StartOutputRecording,
     StopOutputRecording {
         output_path: PathBuf,
     },
+    SaveSessionAudio {
+        session_path: PathBuf,
+    },
+    LoadLoopAudio {
+        looper_index: usize,
+        path: PathBuf,
+        original_sample_rate: u32,
+    },
+    SetTransportLen(usize),
+    SetMixerState(MixerState),
 }
 
 pub struct AudioEngine {
@@ -184,7 +199,7 @@ pub struct AudioEngine {
     transport_state: TransportState,
     sample_rate: f32,
     playing_pads: Arc<AtomicU16>,
-    pub track_mixer_state: Arc<RwLock<TrackMixerState>>,
+    pub track_mixer_state: Arc<RwLock<MixerState>>,
     pub peak_meters: Arc<[AtomicU32; NUM_LOOPERS]>,
     cpu_load: Arc<AtomicU32>,
     input_peak_meter: Arc<AtomicU32>,
@@ -228,24 +243,66 @@ fn write_wav_file(path: &Path, audio_buffer: &[f32], sample_rate: f32) -> Result
     Ok(())
 }
 
-fn trim_silence(mut audio_buffer: Vec<f32>) -> Vec<f32> {
-    const SILENCE_THRESHOLD: f32 = 0.001;
-    let start_pos = audio_buffer
-        .iter()
-        .position(|&s| s.abs() > SILENCE_THRESHOLD)
-        .unwrap_or(0);
-    let end_pos = audio_buffer
-        .iter()
-        .rposition(|&s| s.abs() > SILENCE_THRESHOLD)
-        .unwrap_or(0);
+fn trim_silence(audio_buffer: Vec<f32>) -> Vec<f32> {
+    const SILENCE_THRESHOLD: f32 = 0.005; // RMS threshold
+    const BLOCK_SIZE: usize = 512;       // Analyze in chunks of 512 samples
+    const REQUIRED_BLOCKS: usize = 3;    // Need 3 consecutive blocks of sound to confirm start
+
+    let num_blocks = audio_buffer.len() / BLOCK_SIZE;
+    let mut consecutive_sound_blocks = 0;
+    let mut start_block = None;
+
+    // Find the starting position
+    for i in 0..num_blocks {
+        let block = &audio_buffer[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
+        let sum_sq: f32 = block.iter().map(|&s| s * s).sum();
+        let rms = (sum_sq / BLOCK_SIZE as f32).sqrt();
+
+        if rms > SILENCE_THRESHOLD {
+            consecutive_sound_blocks += 1;
+            if consecutive_sound_blocks >= REQUIRED_BLOCKS {
+                start_block = Some(i.saturating_sub(REQUIRED_BLOCKS - 1));
+                break;
+            }
+        } else {
+            consecutive_sound_blocks = 0;
+        }
+    }
+
+    let start_pos = match start_block {
+        Some(block_idx) => block_idx * BLOCK_SIZE,
+        None => return Vec::new(), // All silent
+    };
+
+    // Find the ending position (search backwards)
+    consecutive_sound_blocks = 0;
+    let mut end_block = None;
+    for i in (0..num_blocks).rev() {
+        let block = &audio_buffer[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
+        let sum_sq: f32 = block.iter().map(|&s| s * s).sum();
+        let rms = (sum_sq / BLOCK_SIZE as f32).sqrt();
+
+        if rms > SILENCE_THRESHOLD {
+            consecutive_sound_blocks += 1;
+            if consecutive_sound_blocks >= REQUIRED_BLOCKS {
+                end_block = Some(i);
+                break;
+            }
+        } else {
+            consecutive_sound_blocks = 0;
+        }
+    }
+
+    let end_pos = match end_block {
+        Some(block_idx) => (block_idx + 1) * BLOCK_SIZE,
+        None => audio_buffer.len(), // Should be unreachable if start was found
+    };
 
     if start_pos >= end_pos {
         return Vec::new();
     }
 
-    audio_buffer.truncate(end_pos + 1);
-    audio_buffer.drain(0..start_pos);
-    audio_buffer
+    audio_buffer[start_pos..end_pos].to_vec()
 }
 
 impl AudioEngine {
@@ -256,7 +313,7 @@ impl AudioEngine {
         sample_rate: f32,
         selected_midi_channel: Arc<AtomicU8>,
         playing_pads: Arc<AtomicU16>,
-        track_mixer_state: Arc<RwLock<TrackMixerState>>,
+        track_mixer_state: Arc<RwLock<MixerState>>,
         peak_meters: Arc<[AtomicU32; NUM_LOOPERS]>,
         cpu_load: Arc<AtomicU32>,
         input_peak_meter: Arc<AtomicU32>,
@@ -367,13 +424,70 @@ impl AudioEngine {
                         });
                     }
                 }
+                AudioCommand::SaveSessionAudio { session_path } => {
+                    for (i, looper) in self.loopers.iter().enumerate() {
+                        if !looper.audio.is_empty() {
+                            let audio_data = looper.audio.clone();
+                            let path = session_path.join(format!("loop_{}.wav", i));
+                            let sample_rate = self.sample_rate;
+                            thread::spawn(move || {
+                                // For session saving, we'll save as mono to preserve original data
+                                let spec = hound::WavSpec {
+                                    channels: 1,
+                                    sample_rate: sample_rate as u32,
+                                    bits_per_sample: 16,
+                                    sample_format: hound::SampleFormat::Int,
+                                };
+                                if let Ok(mut writer) = hound::WavWriter::create(&path, spec) {
+                                    for &sample in &audio_data {
+                                        let amplitude = i16::MAX as f32;
+                                        writer.write_sample((sample * amplitude) as i16).ok();
+                                    }
+                                    writer.finalize().ok();
+                                } else {
+                                    eprintln!("Failed to create session wav file at {}", path.display());
+                                }
+                            });
+                        }
+                    }
+                }
+                AudioCommand::LoadLoopAudio { looper_index, path, original_sample_rate } => {
+                    let target_sr = self.sample_rate;
+                    match Self::load_and_resample_wav_for_session(&path, original_sample_rate as f32, target_sr) {
+                        Ok(audio_data) => {
+                            if let Some(looper) = self.loopers.get_mut(looper_index) {
+                                looper.audio = audio_data;
+                                looper.playhead = 0;
+                                looper.shared_state.set(LooperState::Playing);
+                                looper.shared_state.set_length_in_cycles(1);
+                                self.update_waveform_summary(looper_index);
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to load session loop {}: {}", path.display(), e),
+                    }
+                }
+                AudioCommand::SetTransportLen(len) => {
+                    self.transport_len_samples.store(len, Ordering::Relaxed);
+                }
+                AudioCommand::SetMixerState(state) => {
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        *mixer_state = state;
+                    }
+                }
                 AudioCommand::PlayTransport => {
                     self.transport_state = TransportState::Playing;
                     self.transport_is_playing.store(true, Ordering::Relaxed);
                 }
-                AudioCommand::PauseTransport => {
+                AudioCommand::StopTransport => {
                     self.transport_state = TransportState::Paused;
                     self.transport_is_playing.store(false, Ordering::Relaxed);
+                    self.transport_playhead.store(0, Ordering::Relaxed);
+                    // --- ADDED THIS LOOP ---
+                    for looper in self.loopers.iter_mut() {
+                        looper.playhead = 0;
+                        looper.shared_state.set_playhead(0);
+                    }
+                    // ---------------------
                 }
                 AudioCommand::ClearAllAndPlay => {
                     self.transport_state = TransportState::Playing;
@@ -384,7 +498,19 @@ impl AudioEngine {
                         self.clear_looper(i);
                     }
                     if let Ok(mut mixer_state) = self.track_mixer_state.write() {
-                        *mixer_state = TrackMixerState::default();
+                        *mixer_state = MixerState::default();
+                    }
+                }
+                AudioCommand::ClearAll => {
+                    self.transport_state = TransportState::Paused;
+                    self.transport_is_playing.store(false, Ordering::Relaxed);
+                    self.transport_playhead.store(0, Ordering::Relaxed);
+                    self.transport_len_samples.store(0, Ordering::Relaxed);
+                    for i in 0..NUM_LOOPERS {
+                        self.clear_looper(i);
+                    }
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        *mixer_state = MixerState::default();
                     }
                 }
                 AudioCommand::ToggleLooper(id) => {
@@ -847,14 +973,16 @@ impl AudioEngine {
                 let state = looper.shared_state.get();
                 match state {
                     LooperState::Armed => {
-                        if transport_len == 0 && record_input.abs() > LOOPER_ARM_THRESHOLD {
+                        if self.transport_state == TransportState::Playing && transport_len == 0 && record_input.abs() > LOOPER_ARM_THRESHOLD {
                             looper.shared_state.set(LooperState::Recording);
                             looper.cycles_recorded = 1;
                         }
                     }
                     LooperState::Recording => {
-                        looper.audio.push(record_input);
-                        looper.samples_since_waveform_update += 1;
+                        if self.transport_state == TransportState::Playing {
+                            looper.audio.push(record_input);
+                            looper.samples_since_waveform_update += 1;
+                        }
                     }
                     LooperState::Playing | LooperState::Overdubbing => {
                         if !looper.audio.is_empty() {
@@ -868,14 +996,16 @@ impl AudioEngine {
                                 !track_state.is_muted
                             };
 
-                            if is_audible {
+                            if self.transport_state == TransportState::Playing && is_audible {
                                 looper_output += sample_to_play * track_state.volume;
                             }
-                            if state == LooperState::Overdubbing {
+
+                            if state == LooperState::Overdubbing && self.transport_state == TransportState::Playing {
                                 looper.audio[looper.playhead] =
                                     (sample_to_play + record_input).clamp(-1.0, 1.0);
                                 looper.samples_since_waveform_update += 1;
                             }
+
                             if self.transport_state == TransportState::Playing {
                                 looper.playhead = (looper.playhead + 1) % looper.audio.len();
                                 looper.shared_state.set_playhead(looper.playhead);
@@ -972,5 +1102,51 @@ impl AudioEngine {
         }
 
         output_buffer
+    }
+
+
+    fn load_and_resample_wav_for_session(path: &Path, source_sr: f32, target_sr: f32) -> Result<Vec<f32>> {
+        let file = BufReader::new(File::open(path)?);
+        // We use hound here because rodio's decoder might not correctly read the sample rate
+        // from a file it just wrote. Hound is more reliable for this specific task.
+        let reader = hound::WavReader::new(file)?;
+        let spec = reader.spec();
+
+        // Session loops are saved as mono
+        if spec.channels != 1 {
+            return Err(anyhow::anyhow!("Expected mono WAV file for session loop"));
+        }
+
+        let mono_samples: Vec<f32> = reader
+            .into_samples::<i16>()
+            .filter_map(Result::ok)
+            .map(|s| s as f32 / i16::MAX as f32)
+            .collect();
+
+        if (source_sr - target_sr).abs() > 1e-3 {
+            println!(
+                "Resampling session loop from {} Hz to {} Hz",
+                source_sr, target_sr
+            );
+            let params = SincInterpolationParameters {
+                sinc_len: 256,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Linear,
+                oversampling_factor: 256,
+                window: WindowFunction::BlackmanHarris2,
+            };
+            let mut resampler = SincFixedIn::<f32>::new(
+                target_sr as f64 / source_sr as f64,
+                2.0,
+                params,
+                mono_samples.len(),
+                1,
+            )?;
+            let waves_in = vec![mono_samples];
+            let waves_out = resampler.process(&waves_in, None)?;
+            Ok(waves_out.into_iter().next().unwrap_or_default())
+        } else {
+            Ok(mono_samples)
+        }
     }
 }

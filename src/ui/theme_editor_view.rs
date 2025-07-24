@@ -78,6 +78,12 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     ui.label("Button Background");
                                     ui.color_edit_button_srgba(&mut app.theme.top_bar.button_bg);
                                     ui.end_row();
+                                    ui.label("Session Save BG");
+                                    ui.color_edit_button_srgba(&mut app.theme.top_bar.session_button_bg);
+                                    ui.end_row();
+                                    ui.label("Session Save As BG");
+                                    ui.color_edit_button_srgba(&mut app.theme.top_bar.session_save_as_button_bg);
+                                    ui.end_row();
                                     ui.label("Text");
                                     ui.color_edit_button_srgba(&mut app.theme.top_bar.text_color);
                                     ui.end_row();
