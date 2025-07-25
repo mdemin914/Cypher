@@ -1,7 +1,73 @@
-use serde::{Deserialize, Serialize};
+// src/settings.rs
+use crate::looper::NUM_LOOPERS;
+use serde::{de, Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+pub struct MidiControlId {
+    pub channel: u8,
+    pub cc: u8,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ControllableParameter {
+    Looper(usize),
+    MixerVolume(usize),
+}
+
+impl std::fmt::Display for ControllableParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ControllableParameter::Looper(i) => write!(f, "Looper {} Trigger", i + 1),
+            ControllableParameter::MixerVolume(i) => write!(f, "Mixer Ch {} Volume", i + 1),
+        }
+    }
+}
+
+// **THE FIX IS HERE**: A custom deserializer to handle old and new settings files.
+fn deserialize_midi_mappings<'de, D>(
+    deserializer: D,
+) -> Result<Vec<(MidiControlId, ControllableParameter)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct MidiMappingsVisitor;
+
+    impl<'de> de::Visitor<'de> for MidiMappingsVisitor {
+        type Value = Vec<(MidiControlId, ControllableParameter)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a sequence (array) or an empty map")
+        }
+
+        // Handles the NEW, correct format: `[...]`
+        fn visit_seq<S>(self, seq: S) -> Result<Self::Value, S::Error>
+        where
+            S: de::SeqAccess<'de>,
+        {
+            Deserialize::deserialize(de::value::SeqAccessDeserializer::new(seq))
+        }
+
+        // Handles the OLD, incorrect format: `{}`
+        fn visit_map<M>(self, _map: M) -> Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            // If we find a map, we know it's the old, invalid format.
+            // We can't parse its contents, so we gracefully return an empty Vec.
+            // The next time settings are saved, it will be in the correct format.
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(MidiMappingsVisitor)
+}
+
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(default)]
@@ -18,6 +84,13 @@ pub struct AppSettings {
     pub last_synth_preset: Option<PathBuf>,
     pub last_theme: Option<PathBuf>,
     pub bpm_rounding: bool,
+
+    #[serde(skip)]
+    pub midi_mappings: BTreeMap<MidiControlId, ControllableParameter>,
+
+    #[serde(rename = "midi_mappings")]
+    #[serde(deserialize_with = "deserialize_midi_mappings")]
+    pub midi_mappings_vec: Vec<(MidiControlId, ControllableParameter)>,
 }
 
 impl Default for AppSettings {
@@ -30,11 +103,13 @@ impl Default for AppSettings {
             output_device: None,
             sample_rate: None,
             buffer_size: None,
-            input_latency_compensation_ms: 5.0, // Default to 5ms safety buffer
+            input_latency_compensation_ms: 5.0,
             last_sampler_kit: None,
             last_synth_preset: None,
             last_theme: None,
             bpm_rounding: false,
+            midi_mappings: BTreeMap::new(),
+            midi_mappings_vec: Vec::new(),
         }
     }
 }
@@ -52,15 +127,11 @@ pub fn get_config_dir() -> Option<PathBuf> {
                 &app_settings_dir.join("Kits"),
                 &app_settings_dir.join("Themes"),
                 &app_settings_dir.join("LiveRecordings"),
-                &app_settings_dir.join("Sessions"), // Added this line
+                &app_settings_dir.join("Sessions"),
             ] {
                 if !dir.exists() {
                     if let Err(e) = fs::create_dir_all(dir) {
-                        eprintln!(
-                            "Failed to create directory at {}: {}",
-                            dir.display(),
-                            e
-                        );
+                        eprintln!("Failed to create directory at {}: {}", dir.display(), e);
                         return None;
                     }
                 }
@@ -72,7 +143,10 @@ pub fn get_config_dir() -> Option<PathBuf> {
     None
 }
 
-pub fn save_settings(settings: &AppSettings) {
+pub fn save_settings(settings: &mut AppSettings) {
+    // Before saving, ensure the Vec is up-to-date with the live BTreeMap.
+    settings.midi_mappings_vec = settings.midi_mappings.iter().map(|(k, v)| (*k, *v)).collect();
+
     if let Some(dir) = get_config_dir() {
         let path = dir.join("settings.json");
         match serde_json::to_string_pretty(settings) {
@@ -93,8 +167,12 @@ pub fn load_settings() -> AppSettings {
         let path = dir.join("settings.json");
         if path.exists() {
             return match fs::read_to_string(&path) {
-                Ok(json_string) => match serde_json::from_str(&json_string) {
-                    Ok(settings) => settings,
+                Ok(json_string) => match serde_json::from_str::<AppSettings>(&json_string) {
+                    Ok(mut settings) => {
+                        // After loading, convert the Vec back into the BTreeMap for app use.
+                        settings.midi_mappings = settings.midi_mappings_vec.iter().cloned().collect();
+                        settings
+                    }
                     Err(e) => {
                         eprintln!("Failed to parse settings file, using defaults. Error: {}", e);
                         AppSettings::default()

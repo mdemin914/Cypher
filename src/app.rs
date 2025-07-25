@@ -1,3 +1,4 @@
+// src/app.rs
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine, MidiMessage};
@@ -8,7 +9,7 @@ use crate::mixer::{MixerState, MixerTrackState};
 use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::SamplerKit;
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
-use crate::settings::{self, AppSettings};
+use crate::settings::{self, AppSettings, ControllableParameter, MidiControlId};
 use crate::slicer;
 use crate::synth::{
     EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, SamplerParams, WavetableParams,
@@ -158,6 +159,7 @@ pub struct CypherApp {
     pub synth_editor_window_open: bool,
     pub theme_editor_window_open: bool,
     pub slicer_window_open: bool,
+    pub midi_mapping_window_open: bool,
     pub is_recording_output: bool,
     pub recording_notification: Option<(String, Instant)>,
     pub library_path: Vec<String>,
@@ -231,6 +233,11 @@ pub struct CypherApp {
 
     // --- Slicer State ---
     pub slicer_state: SlicerState,
+
+    // --- MIDI Mapping State ---
+    pub midi_mappings: Arc<RwLock<BTreeMap<MidiControlId, ControllableParameter>>>,
+    pub midi_learn_target: Arc<RwLock<Option<ControllableParameter>>>,
+    pub last_midi_cc_message: Arc<RwLock<Option<(MidiControlId, Instant)>>>,
 
     // --- Settings State (for UI) ---
     pub available_hosts: Vec<HostId>,
@@ -339,12 +346,16 @@ impl CypherApp {
         let gain_reduction_db = Arc::new(AtomicU32::new(0));
         let master_peak_meter = Arc::new(AtomicU32::new(0));
 
+        // **FIX**: Initialize the live MIDI map from the `settings` variable that was just loaded.
+        let midi_mappings = Arc::new(RwLock::new(settings.midi_mappings.clone()));
+
         let app = Self {
             options_window_open: false,
             sample_pad_window_open: false,
             synth_editor_window_open: false,
             theme_editor_window_open: false,
             slicer_window_open: false,
+            midi_mapping_window_open: false,
             is_recording_output: false,
             recording_notification: None,
             library_path: Vec::new(),
@@ -403,6 +414,9 @@ impl CypherApp {
             displayed_theory_notes: Vec::new(),
             last_recognized_chord_notes: BTreeSet::new(),
             slicer_state: SlicerState::new(),
+            midi_mappings,
+            midi_learn_target: Arc::new(RwLock::new(None)),
+            last_midi_cc_message: Arc::new(RwLock::new(None)),
             available_hosts,
             selected_host_index,
             midi_ports: midi::get_midi_ports()?,
@@ -979,6 +993,9 @@ impl CypherApp {
                     sender.clone(),
                     self.live_midi_notes.clone(),
                     port_info.1.clone(),
+                    self.midi_mappings.clone(),
+                    self.midi_learn_target.clone(),
+                    self.last_midi_cc_message.clone(),
                 )?);
             }
         }
@@ -1013,7 +1030,12 @@ impl CypherApp {
         self.settings.midi_channel = self.selected_midi_channel.load(Ordering::Relaxed);
         self.settings.input_latency_compensation_ms =
             self.input_latency_compensation_ms.load(Ordering::Relaxed) as f32 / 100.0;
-        settings::save_settings(&self.settings);
+
+        // **FIX**: The live BTreeMap is now copied to the serializable Vec inside the function we call.
+        self.settings.midi_mappings = self.midi_mappings.read().unwrap().clone();
+
+        // **THE FIX IS HERE**: Pass a mutable reference.
+        settings::save_settings(&mut self.settings);
         self.bpm_rounding_setting_changed_unapplied = false;
     }
 
@@ -1973,6 +1995,14 @@ impl eframe::App for CypherApp {
         if let Some((_, time)) = self.recording_notification {
             if time.elapsed() > std::time::Duration::from_secs(5) {
                 self.recording_notification = None;
+            }
+        }
+
+        if let Ok(mut last_msg) = self.last_midi_cc_message.write() {
+            if let Some((_, time)) = *last_msg {
+                if time.elapsed() > std::time::Duration::from_secs(3) {
+                    *last_msg = None;
+                }
             }
         }
 

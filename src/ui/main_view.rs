@@ -4,6 +4,7 @@ use crate::looper::{LooperState, NUM_LOOPERS};
 use crate::settings;
 use crate::synth_view;
 use crate::ui;
+use crate::ui::midi_mapping_view::draw_midi_mapping_window;
 use crate::ui::mixer_view::horizontal_volume_fader;
 use crate::ui::slicer_view::draw_slicer_window;
 use chrono::Local;
@@ -32,6 +33,9 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     }
     if app.slicer_window_open {
         draw_slicer_window(app, ctx);
+    }
+    if app.midi_mapping_window_open {
+        draw_midi_mapping_window(app, ctx);
     }
 
     // --- Draw Notification Overlay ---
@@ -193,30 +197,8 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
                 });
 
                 if !was_already_pressed {
-                    let is_playing = app.transport_is_playing.load(Ordering::Relaxed);
-                    let transport_has_started = app.transport_len_samples.load(Ordering::Relaxed) > 0;
-
-                    match state {
-                        LooperState::Empty => {
-                            if !transport_has_started {
-                                // SCENARIO: Blank slate. Always allow arming the first looper.
-                                app.send_command(AudioCommand::ArmLooper(id));
-                            } else if is_playing {
-                                // SCENARIO: Session in progress. Only allow recording new loops while playing.
-                                app.send_command(AudioCommand::ToggleLooper(id));
-                            }
-                        }
-                        LooperState::Armed => {
-                            // Clicking an armed looper always cancels the arm.
-                            app.send_command(AudioCommand::ClearLooper(id));
-                        }
-                        _ => { // Covers Playing, Overdubbing, and Stopped states
-                            // Any other action (like toggling overdub) can only happen if playing.
-                            if is_playing {
-                                app.send_command(AudioCommand::ToggleLooper(id));
-                            }
-                        }
-                    }
+                    // Logic is now unified in the audio engine
+                    app.send_command(AudioCommand::LooperPress(id));
                 }
             } else {
                 ui.memory_mut(|m| m.data.insert_temp(main_button_id, false));

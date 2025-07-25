@@ -1,3 +1,4 @@
+// src/theme.rs
 use crate::looper::NUM_LOOPERS;
 use egui::{epaint, style, Color32, CornerRadius, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
@@ -139,13 +140,13 @@ fn default_mod_filter_color() -> Color32 { Color32::from_rgb(80, 160, 255) }
 fn default_mod_amp_cold_color() -> Color32 { Color32::from_rgb(0, 180, 255) }
 fn default_mod_amp_hot_color() -> Color32 { Color32::from_rgb(255, 140, 0) }
 
-// --- New: Piano Keys ---
+// Piano Keys
 fn default_piano_white_key_color() -> Color32 { Color32::from_gray(240) }
 fn default_piano_black_key_color() -> Color32 { Color32::from_gray(20) }
 fn default_piano_played_key_color() -> Color32 { Color32::from_rgb(255, 0, 0) }
 fn default_piano_outline_color() -> Color32 { Color32::from_gray(90) }
 
-// --- New: Slicer Window ---
+// Slicer Window
 fn default_slicer_background() -> Color32 { Color32::from_gray(38) }
 fn default_slicer_waveform_color() -> Color32 { Color32::from_rgb(150, 150, 255) }
 fn default_slicer_waveform_bg_color() -> Color32 { Color32::from_gray(25) }
@@ -155,6 +156,15 @@ fn default_slicer_button_bg() -> Color32 { Color32::from_gray(80) }
 fn default_slicer_slider_track_color() -> Color32 { Color32::from_gray(50) }
 fn default_slicer_slider_grab_color() -> Color32 { Color32::from_rgb(190, 80, 255) }
 fn default_slicer_text_edit_bg() -> Color32 { Color32::from_gray(20) }
+
+// --- New: MIDI Mapping Window ---
+fn default_midi_mapping_background() -> Color32 { Color32::from_gray(38) }
+fn default_midi_mapping_label_color() -> Color32 { Color32::from_gray(200) }
+fn default_midi_mapping_button_bg() -> Color32 { Color32::from_gray(80) }
+fn default_midi_mapping_learn_button_bg() -> Color32 { Color32::from_rgb(200, 160, 0) }
+fn default_midi_mapping_row_even_bg() -> Color32 { Color32::from_gray(42) }
+fn default_midi_mapping_row_odd_bg() -> Color32 { Color32::from_gray(46) }
+fn default_midi_mapping_header_bg() -> Color32 { Color32::from_gray(55) }
 
 // --- New Hierarchical Theme Structs ---
 
@@ -378,6 +388,19 @@ pub struct SlicerWindowTheme {
 }
 impl Default for SlicerWindowTheme { fn default() -> Self { Self { background: default_slicer_background(), waveform_color: default_slicer_waveform_color(), waveform_bg_color: default_slicer_waveform_bg_color(), slice_marker_color: default_slicer_slice_marker_color(), label_color: default_slicer_label_color(), button_bg: default_slicer_button_bg(), slider_track_color: default_slicer_slider_track_color(), slider_grab_color: default_slicer_slider_grab_color(), text_edit_bg: default_slicer_text_edit_bg(), } } }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct MidiMappingTheme {
+    #[serde(default = "default_midi_mapping_background")] pub background: Color32,
+    #[serde(default = "default_midi_mapping_label_color")] pub label_color: Color32,
+    #[serde(default = "default_midi_mapping_button_bg")] pub button_bg: Color32,
+    #[serde(default = "default_midi_mapping_learn_button_bg")] pub learn_button_bg: Color32,
+    #[serde(default = "default_midi_mapping_row_even_bg")] pub row_even_bg: Color32,
+    #[serde(default = "default_midi_mapping_row_odd_bg")] pub row_odd_bg: Color32,
+    #[serde(default = "default_midi_mapping_header_bg")] pub header_bg: Color32,
+}
+impl Default for MidiMappingTheme { fn default() -> Self { Self { background: default_midi_mapping_background(), label_color: default_midi_mapping_label_color(), button_bg: default_midi_mapping_button_bg(), learn_button_bg: default_midi_mapping_learn_button_bg(), row_even_bg: default_midi_mapping_row_even_bg(), row_odd_bg: default_midi_mapping_row_odd_bg(), header_bg: default_midi_mapping_header_bg(), } } }
+
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
@@ -398,6 +421,7 @@ pub struct Theme {
     pub synth_editor_window: SynthEditorTheme,
     pub piano_keys: PianoKeyTheme,
     pub slicer_window: SlicerWindowTheme,
+    pub midi_mapping_window: MidiMappingTheme,
 }
 
 

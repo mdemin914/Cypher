@@ -65,6 +65,11 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
 
+            ui.add_space(4.0);
+            if ui.add(Button::new("MIDI Control Setup").fill(app.theme.options_window.widget_bg)).clicked() {
+                app.midi_mapping_window_open = true;
+            }
+
             ui.separator();
             ui.heading(RichText::new("Audio Settings").color(app.theme.options_window.heading_color));
             ui.label(RichText::new("Applying new audio settings will reset the current session.").color(app.theme.options_window.label_color));

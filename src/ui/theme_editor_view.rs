@@ -1,3 +1,4 @@
+// src/ui/theme_editor_view.rs
 use crate::app::CypherApp;
 use crate::looper::NUM_LOOPERS;
 use egui::{collapsing_header::CollapsingHeader, Grid, ScrollArea, Window};
@@ -481,6 +482,35 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     ui.end_row();
                                     ui.label("Text Edit BG");
                                     ui.color_edit_button_srgba(&mut theme.text_edit_bg);
+                                    ui.end_row();
+                                });
+                            });
+
+                        CollapsingHeader::new("MIDI Mapping Window")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                let theme = &mut app.theme.midi_mapping_window;
+                                Grid::new("midi_mapping_theme").show(ui, |ui| {
+                                    ui.label("Background");
+                                    ui.color_edit_button_srgba(&mut theme.background);
+                                    ui.end_row();
+                                    ui.label("Label Text");
+                                    ui.color_edit_button_srgba(&mut theme.label_color);
+                                    ui.end_row();
+                                    ui.label("Button BG");
+                                    ui.color_edit_button_srgba(&mut theme.button_bg);
+                                    ui.end_row();
+                                    ui.label("Learn Button BG");
+                                    ui.color_edit_button_srgba(&mut theme.learn_button_bg);
+                                    ui.end_row();
+                                    ui.label("Row (Even)");
+                                    ui.color_edit_button_srgba(&mut theme.row_even_bg);
+                                    ui.end_row();
+                                    ui.label("Row (Odd)");
+                                    ui.color_edit_button_srgba(&mut theme.row_odd_bg);
+                                    ui.end_row();
+                                    ui.label("Header BG");
+                                    ui.color_edit_button_srgba(&mut theme.header_bg);
                                     ui.end_row();
                                 });
                             });

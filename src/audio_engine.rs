@@ -112,8 +112,7 @@ pub struct MidiMessage {
 
 #[derive(Debug)]
 pub enum AudioCommand {
-    ToggleLooper(usize),
-    ArmLooper(usize),
+    LooperPress(usize),
     ClearLooper(usize),
     MidiMessage(MidiMessage),
     ActivateSynth,
@@ -180,6 +179,10 @@ pub enum AudioCommand {
     },
     SetTransportLen(usize),
     SetMixerState(MixerState),
+    SetMixerTrackVolume {
+        track_index: usize,
+        volume: f32,
+    },
 }
 
 pub struct AudioEngine {
@@ -474,6 +477,13 @@ impl AudioEngine {
                         *mixer_state = state;
                     }
                 }
+                AudioCommand::SetMixerTrackVolume { track_index, volume } => {
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        if let Some(track) = mixer_state.tracks.get_mut(track_index) {
+                            track.volume = volume;
+                        }
+                    }
+                }
                 AudioCommand::PlayTransport => {
                     self.transport_state = TransportState::Playing;
                     self.transport_is_playing.store(true, Ordering::Relaxed);
@@ -513,22 +523,29 @@ impl AudioEngine {
                         *mixer_state = MixerState::default();
                     }
                 }
-                AudioCommand::ToggleLooper(id) => {
-                    let looper = &mut self.loopers[id];
-                    let current_state = looper.shared_state.get();
+                AudioCommand::LooperPress(id) => {
+                    let is_playing = self.transport_is_playing.load(Ordering::Relaxed);
+                    let transport_has_started = self.transport_len_samples.load(Ordering::Relaxed) > 0;
+                    let state = self.loopers[id].shared_state.get();
 
-                    if current_state == LooperState::Playing {
-                        looper.shared_state.set(LooperState::Overdubbing);
-                    } else if current_state == LooperState::Overdubbing {
-                        looper.shared_state.set(LooperState::Playing);
-                    } else {
-                        looper.pending_command = true;
-                        if current_state == LooperState::Empty {
-                            looper.shared_state.set(LooperState::Armed);
+                    match state {
+                        LooperState::Empty => {
+                            if !transport_has_started {
+                                self.arm_looper(id);
+                            } else if is_playing {
+                                self.handle_toggle_looper(id);
+                            }
+                        }
+                        LooperState::Armed => {
+                            self.clear_looper(id);
+                        }
+                        _ => { // Playing, Overdubbing, Stopped
+                            if is_playing {
+                                self.handle_toggle_looper(id);
+                            }
                         }
                     }
                 }
-                AudioCommand::ArmLooper(id) => self.arm_looper(id),
                 AudioCommand::ClearLooper(id) => self.clear_looper(id),
                 AudioCommand::SetMasterVolume(vol) => self
                     .master_volume
@@ -677,6 +694,22 @@ impl AudioEngine {
                         pad.is_playing = false;
                     }
                 }
+            }
+        }
+    }
+
+    fn handle_toggle_looper(&mut self, id: usize) {
+        let looper = &mut self.loopers[id];
+        let current_state = looper.shared_state.get();
+
+        if current_state == LooperState::Playing {
+            looper.shared_state.set(LooperState::Overdubbing);
+        } else if current_state == LooperState::Overdubbing {
+            looper.shared_state.set(LooperState::Playing);
+        } else {
+            looper.pending_command = true;
+            if current_state == LooperState::Empty {
+                looper.shared_state.set(LooperState::Armed);
             }
         }
     }

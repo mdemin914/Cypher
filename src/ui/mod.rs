@@ -5,6 +5,7 @@ mod mixer_view;
 mod theme_editor_view;
 mod eighty_eight_keys_view;
 mod slicer_view;
+mod midi_mapping_view;
 // Added
 
 pub use main_view::draw_main_view;
