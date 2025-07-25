@@ -1,3 +1,4 @@
+// src/sampler_engine.rs
 use crate::synth::{
     Adsr, AdsrSettings, Engine, Filter, FilterSettings, Lfo, LfoRateMode, LfoSettings,
     ModDestination, ModRouting, ModSource,
@@ -476,7 +477,12 @@ impl SamplerEngine {
 }
 
 impl Engine for SamplerEngine {
-    fn process(&mut self, output_buffer: &mut [f32], transport_len_samples: usize) {
+    fn process(
+        &mut self,
+        output_buffer: &mut [f32],
+        transport_len_samples: usize,
+        midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
+    ) {
         let block_size = output_buffer.len();
         output_buffer.fill(0.0);
 
@@ -529,6 +535,9 @@ impl Engine for SamplerEngine {
                             ModSource::Lfo1 => lfo1_output[i],
                             ModSource::Lfo2 => lfo2_output[i],
                             ModSource::Static => 1.0,
+                            ModSource::MidiCC(id) => {
+                                midi_cc_values[id.channel as usize][id.cc as usize].load(Ordering::Relaxed) as f32 / 1_000_000.0
+                            }
                             _ => continue,
                         };
                         let mod_val = source_val * routing.amount;
@@ -573,6 +582,9 @@ impl Engine for SamplerEngine {
                     ModSource::Lfo1 => lfo1_val,
                     ModSource::Lfo2 => lfo2_val,
                     ModSource::Static => 1.0,
+                    ModSource::MidiCC(id) => {
+                        midi_cc_values[id.channel as usize][id.cc as usize].load(Ordering::Relaxed) as f32 / 1_000_000.0
+                    }
                     _ => 0.0,
                 };
                 let mod_val = source_val * routing.amount;

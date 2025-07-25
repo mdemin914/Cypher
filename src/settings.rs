@@ -16,8 +16,33 @@ pub struct MidiControlId {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ControllableParameter {
+    // Looper
     Looper(usize),
+
+    // Mixer
     MixerVolume(usize),
+    MixerToggleMute(usize),
+    MixerToggleSolo(usize),
+
+    // Instruments
+    SynthToggleActive,
+    SynthMasterVolume,
+    SamplerToggleActive,
+    SamplerMasterVolume,
+
+    // Audio Input
+    InputToggleArm,
+    InputToggleMonitor,
+
+    // Transport
+    TransportTogglePlay,
+    TransportToggleMuteAll,
+    TransportClearAll,
+    TransportToggleRecord,
+
+    // Master Section
+    MasterVolume,
+    LimiterThreshold,
 }
 
 impl std::fmt::Display for ControllableParameter {
@@ -25,6 +50,20 @@ impl std::fmt::Display for ControllableParameter {
         match self {
             ControllableParameter::Looper(i) => write!(f, "Looper {} Trigger", i + 1),
             ControllableParameter::MixerVolume(i) => write!(f, "Mixer Ch {} Volume", i + 1),
+            ControllableParameter::MixerToggleMute(i) => write!(f, "Mixer Ch {} Mute", i + 1),
+            ControllableParameter::MixerToggleSolo(i) => write!(f, "Mixer Ch {} Solo", i + 1),
+            ControllableParameter::SynthToggleActive => write!(f, "Synth Active Toggle"),
+            ControllableParameter::SynthMasterVolume => write!(f, "Synth Master Volume"),
+            ControllableParameter::SamplerToggleActive => write!(f, "Sampler Active Toggle"),
+            ControllableParameter::SamplerMasterVolume => write!(f, "Sampler Master Volume"),
+            ControllableParameter::InputToggleArm => write!(f, "Input Arm Toggle"),
+            ControllableParameter::InputToggleMonitor => write!(f, "Input Monitor Toggle"),
+            ControllableParameter::TransportTogglePlay => write!(f, "Transport Play/Stop"),
+            ControllableParameter::TransportToggleMuteAll => write!(f, "Transport Mute All"),
+            ControllableParameter::TransportClearAll => write!(f, "Transport Clear All"),
+            ControllableParameter::TransportToggleRecord => write!(f, "Transport Record Toggle"),
+            ControllableParameter::MasterVolume => write!(f, "Master Volume"),
+            ControllableParameter::LimiterThreshold => write!(f, "Limiter Threshold"),
         }
     }
 }

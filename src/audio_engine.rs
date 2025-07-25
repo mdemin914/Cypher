@@ -1,3 +1,4 @@
+// src/audio_engine.rs
 use crate::looper::{LooperState, SharedLooperState, WAVEFORM_DOWNSAMPLE_SIZE, NUM_LOOPERS};
 use crate::mixer::{MixerState, MixerTrackState};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
@@ -183,6 +184,17 @@ pub enum AudioCommand {
         track_index: usize,
         volume: f32,
     },
+
+    // New Commands for MIDI Mapping
+    ToggleSynth,
+    SetSynthMasterVolume(f32),
+    ToggleSampler,
+    SetSamplerMasterVolume(f32),
+    ToggleTransport,
+    ToggleMuteAll,
+    ToggleRecord,
+    ToggleMixerMute(usize),
+    ToggleMixerSolo(usize),
 }
 
 pub struct AudioEngine {
@@ -223,6 +235,9 @@ pub struct AudioEngine {
     engine_peak_meters: [Arc<AtomicU32>; 2],
     bpm_rounding: bool,
     output_recording_buffer: Option<Vec<f32>>,
+    pub midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
+    // Signal for UI thread to handle recording logic
+    pub should_toggle_record: Arc<AtomicBool>,
     // Buffers for block-based processing
     engine_0_buffer: Vec<f32>,
     engine_1_buffer: Vec<f32>,
@@ -337,6 +352,8 @@ impl AudioEngine {
         engine_params: [EngineWithVolumeAndPeak; 2],
         bpm_rounding: bool,
         transport_is_playing: Arc<AtomicBool>,
+        should_toggle_record: Arc<AtomicBool>,
+        midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
     ) -> (Self, Vec<SharedLooperState>) {
         let looper_states: Vec<SharedLooperState> =
             (0..NUM_LOOPERS).map(|_| SharedLooperState::new()).collect();
@@ -395,6 +412,8 @@ impl AudioEngine {
             engine_peak_meters,
             bpm_rounding,
             output_recording_buffer: None,
+            midi_cc_values,
+            should_toggle_record,
             // Initialize with a default size; will be resized in process_buffer
             engine_0_buffer: vec![0.0; 512],
             engine_1_buffer: vec![0.0; 512],
@@ -406,6 +425,67 @@ impl AudioEngine {
     pub fn handle_commands(&mut self) {
         while let Some(command) = self.command_consumer.pop() {
             match command {
+                AudioCommand::ToggleMixerMute(track_index) => {
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        if let Some(track) = mixer_state.tracks.get_mut(track_index) {
+                            track.is_muted = !track.is_muted;
+                        }
+                    }
+                }
+                AudioCommand::ToggleMixerSolo(track_index) => {
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        if let Some(track) = mixer_state.tracks.get_mut(track_index) {
+                            track.is_soloed = !track.is_soloed;
+                        }
+                    }
+                }
+                AudioCommand::ToggleSynth => {
+                    let is_active = self.synth_is_active.load(Ordering::Relaxed);
+                    self.synth_is_active.store(!is_active, Ordering::Relaxed);
+                    if !is_active { // if we just activated it
+                        self.sampler_is_active.store(false, Ordering::Relaxed);
+                    }
+                }
+                AudioCommand::ToggleSampler => {
+                    let is_active = self.sampler_is_active.load(Ordering::Relaxed);
+                    self.sampler_is_active.store(!is_active, Ordering::Relaxed);
+                    if !is_active { // if we just activated it
+                        self.synth_is_active.store(false, Ordering::Relaxed);
+                    }
+                }
+                AudioCommand::SetSynthMasterVolume(vol) => {
+                    self.synth_master_volume.store((vol * 1_000_000.0) as u32, Ordering::Relaxed);
+                }
+                AudioCommand::SetSamplerMasterVolume(vol) => {
+                    self.sampler_volume.store((vol * 1_000_000.0) as u32, Ordering::Relaxed);
+                }
+                AudioCommand::ToggleTransport => {
+                    if self.transport_is_playing.load(Ordering::Relaxed) {
+                        // This is the logic from the StopTransport command
+                        self.transport_state = TransportState::Paused;
+                        self.transport_is_playing.store(false, Ordering::Relaxed);
+                        self.transport_playhead.store(0, Ordering::Relaxed);
+                        for looper in self.loopers.iter_mut() {
+                            looper.playhead = 0;
+                            looper.shared_state.set_playhead(0);
+                        }
+                    } else {
+                        // This is the logic from the PlayTransport command
+                        self.transport_state = TransportState::Playing;
+                        self.transport_is_playing.store(true, Ordering::Relaxed);
+                    }
+                }
+                AudioCommand::ToggleMuteAll => {
+                    if let Ok(mut mixer_state) = self.track_mixer_state.write() {
+                        let should_mute_all = mixer_state.tracks.iter().any(|track| !track.is_muted);
+                        for track in mixer_state.tracks.iter_mut() {
+                            track.is_muted = should_mute_all;
+                        }
+                    }
+                }
+                AudioCommand::ToggleRecord => {
+                    self.should_toggle_record.store(true, Ordering::Relaxed);
+                }
                 AudioCommand::StartOutputRecording => {
                     self.output_recording_buffer = Some(Vec::new());
                 }
@@ -786,6 +866,7 @@ impl AudioEngine {
                 &mut self.engine_0_buffer,
                 &mut self.engine_1_buffer,
                 transport_len,
+                &self.midi_cc_values,
             );
         } else {
             // Ensure buffers are silent if synth is inactive

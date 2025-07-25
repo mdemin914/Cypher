@@ -1,4 +1,6 @@
+// src/synth.rs
 use crate::sampler_engine;
+use crate::settings::MidiControlId;
 use crate::wavetable_engine::{
     self, SaturationSettings, WavetableEngine, WavetableMixerSettings, WavetableSet,
 };
@@ -95,7 +97,12 @@ pub const WAVETABLE_SIZE: usize = 2048;
 // --- Generic Engine Trait ---
 pub trait Engine {
     /// Processes a block of audio samples, writing the output into `output_buffer`.
-    fn process(&mut self, output_buffer: &mut [f32], transport_len_samples: usize);
+    fn process(
+        &mut self,
+        output_buffer: &mut [f32],
+        transport_len_samples: usize,
+        midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
+    );
     fn note_on(&mut self, note: u8, velocity: u8);
     fn note_off(&mut self, note: u8);
     fn set_polyphonic(&mut self, poly: bool);
@@ -112,10 +119,15 @@ pub enum SynthEngine {
 }
 
 impl Engine for SynthEngine {
-    fn process(&mut self, output_buffer: &mut [f32], transport_len_samples: usize) {
+    fn process(
+        &mut self,
+        output_buffer: &mut [f32],
+        transport_len_samples: usize,
+        midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
+    ) {
         match self {
-            SynthEngine::Wavetable(e) => e.process(output_buffer, transport_len_samples),
-            SynthEngine::Sampler(e) => e.process(output_buffer, transport_len_samples),
+            SynthEngine::Wavetable(e) => e.process(output_buffer, transport_len_samples, midi_cc_values),
+            SynthEngine::Sampler(e) => e.process(output_buffer, transport_len_samples, midi_cc_values),
         }
     }
 
@@ -208,9 +220,10 @@ impl Synth {
         engine_0_output: &mut [f32],
         engine_1_output: &mut [f32],
         transport_len_samples: usize,
+        midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
     ) {
-        self.engines[0].process(engine_0_output, transport_len_samples);
-        self.engines[1].process(engine_1_output, transport_len_samples);
+        self.engines[0].process(engine_0_output, transport_len_samples, midi_cc_values);
+        self.engines[1].process(engine_1_output, transport_len_samples, midi_cc_values);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8) {
@@ -486,6 +499,7 @@ pub enum ModSource {
     Env2,
     Velocity,
     Static,
+    MidiCC(MidiControlId),
 }
 impl ModSource {
     pub const ALL: [ModSource; 5] = [
@@ -498,7 +512,14 @@ impl ModSource {
 }
 impl std::fmt::Display for ModSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            ModSource::Lfo1 => write!(f, "Lfo1"),
+            ModSource::Lfo2 => write!(f, "Lfo2"),
+            ModSource::Env2 => write!(f, "Env2"),
+            ModSource::Velocity => write!(f, "Velocity"),
+            ModSource::Static => write!(f, "Static"),
+            ModSource::MidiCC(id) => write!(f, "MIDI CC {} (Ch {})", id.cc, id.channel + 1),
+        }
     }
 }
 

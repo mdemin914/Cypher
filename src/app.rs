@@ -12,8 +12,8 @@ use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
 use crate::settings::{self, AppSettings, ControllableParameter, MidiControlId};
 use crate::slicer;
 use crate::synth::{
-    EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, SamplerParams, WavetableParams,
-    WAVETABLE_SIZE,
+    EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, ModSource, SamplerParams,
+    WavetableParams, WAVETABLE_SIZE,
 };
 use crate::theme::Theme;
 use crate::theory::{self, ChordStyle, Scale};
@@ -193,6 +193,8 @@ pub struct CypherApp {
     pub cpu_load: Arc<AtomicU32>,
     pub xrun_count: Arc<AtomicUsize>,
     pub live_midi_notes: Arc<RwLock<BTreeSet<u8>>>,
+    pub should_toggle_record_from_midi: Arc<AtomicBool>,
+    pub midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
 
     // --- Mixer State ---
     pub track_mixer_state: Arc<RwLock<MixerState>>,
@@ -238,6 +240,8 @@ pub struct CypherApp {
     pub midi_mappings: Arc<RwLock<BTreeMap<MidiControlId, ControllableParameter>>>,
     pub midi_learn_target: Arc<RwLock<Option<ControllableParameter>>>,
     pub last_midi_cc_message: Arc<RwLock<Option<(MidiControlId, Instant)>>>,
+    pub midi_mod_matrix_learn_target: Arc<RwLock<Option<(usize, usize)>>>,
+    pub last_learned_mod_source: Arc<RwLock<Option<MidiControlId>>>,
 
     // --- Settings State (for UI) ---
     pub available_hosts: Vec<HostId>,
@@ -345,9 +349,15 @@ impl CypherApp {
         let limiter_release_sync_rate = Arc::new(AtomicU32::new(1_000_000));
         let gain_reduction_db = Arc::new(AtomicU32::new(0));
         let master_peak_meter = Arc::new(AtomicU32::new(0));
+        let should_toggle_record_from_midi = Arc::new(AtomicBool::new(false));
 
         // **FIX**: Initialize the live MIDI map from the `settings` variable that was just loaded.
         let midi_mappings = Arc::new(RwLock::new(settings.midi_mappings.clone()));
+
+        // Create the shared state for MIDI CC values
+        let midi_cc_values = Arc::new(std::array::from_fn(|_| {
+            std::array::from_fn(|_| AtomicU32::new(0))
+        }));
 
         let app = Self {
             options_window_open: false,
@@ -384,6 +394,8 @@ impl CypherApp {
             cpu_load,
             xrun_count,
             live_midi_notes: Arc::new(RwLock::new(BTreeSet::new())),
+            should_toggle_record_from_midi,
+            midi_cc_values,
             track_mixer_state,
             peak_meters,
             displayed_peak_levels: [0.0; NUM_LOOPERS],
@@ -417,6 +429,8 @@ impl CypherApp {
             midi_mappings,
             midi_learn_target: Arc::new(RwLock::new(None)),
             last_midi_cc_message: Arc::new(RwLock::new(None)),
+            midi_mod_matrix_learn_target: Arc::new(RwLock::new(None)),
+            last_learned_mod_source: Arc::new(RwLock::new(None)),
             available_hosts,
             selected_host_index,
             midi_ports: midi::get_midi_ports()?,
@@ -819,7 +833,7 @@ impl CypherApp {
 
         let engine_params = [self.get_engine_params(0), self.get_engine_params(1)];
 
-        let (engine, looper_states) = AudioEngine::new(
+        let (mut engine, looper_states) = AudioEngine::new(
             ringbuf_consumer,
             audio_consumer,
             sample_rate.unwrap_or(48000) as f32,
@@ -846,6 +860,8 @@ impl CypherApp {
             engine_params,
             self.settings.bpm_rounding,
             self.transport_is_playing.clone(),
+            self.should_toggle_record_from_midi.clone(),
+            self.midi_cc_values.clone(),
         );
         self.looper_states = looper_states;
         self.transport_playhead = engine.transport_playhead.clone();
@@ -855,6 +871,8 @@ impl CypherApp {
         self.audio_input_is_armed = engine.audio_input_is_armed.clone();
         self.audio_input_is_monitored = engine.audio_input_is_monitored.clone();
         self.sampler_is_active = engine.sampler_is_active.clone();
+        self.should_toggle_record_from_midi = engine.should_toggle_record.clone();
+        self.midi_cc_values = engine.midi_cc_values.clone();
 
         let (input_stream, output_stream, active_sr, active_bs) =
             audio_io::init_and_run_streams(
@@ -996,6 +1014,9 @@ impl CypherApp {
                     self.midi_mappings.clone(),
                     self.midi_learn_target.clone(),
                     self.last_midi_cc_message.clone(),
+                    self.midi_cc_values.clone(),
+                    self.midi_mod_matrix_learn_target.clone(),
+                    self.last_learned_mod_source.clone(),
                 )?);
             }
         }
@@ -1992,6 +2013,22 @@ impl eframe::App for CypherApp {
         // Must be called before any UI is drawn to ensure the display is up to date.
         self.update_theory_display();
 
+        if self.should_toggle_record_from_midi.swap(false, Ordering::Relaxed) {
+            self.is_recording_output = !self.is_recording_output;
+            if self.is_recording_output {
+                self.send_command(AudioCommand::StartOutputRecording);
+            } else {
+                if let Some(config_dir) = settings::get_config_dir() {
+                    let rec_dir = config_dir.join("LiveRecordings");
+                    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                    let filename = format!("LiveRec_{}.wav", timestamp);
+                    let path = rec_dir.join(filename);
+                    self.send_command(AudioCommand::StopOutputRecording { output_path: path.clone() });
+                    self.recording_notification = Some((format!("Saved to {}", path.display()), Instant::now()));
+                }
+            }
+        }
+
         if let Some((_, time)) = self.recording_notification {
             if time.elapsed() > std::time::Duration::from_secs(5) {
                 self.recording_notification = None;
@@ -2003,6 +2040,32 @@ impl eframe::App for CypherApp {
                 if time.elapsed() > std::time::Duration::from_secs(3) {
                     *last_msg = None;
                 }
+            }
+        }
+
+        // --- DEADLOCK-SAFE MIDI LEARN LOGIC ---
+        // 1. Read the target and immediately release the read lock.
+        let learn_target = *self.midi_mod_matrix_learn_target.read().unwrap();
+
+        // 2. If a target is set, proceed.
+        if let Some((engine_index, slot_index)) = learn_target {
+            // 3. Try to take a value from the `last_learned` source.
+            if let Some(control_id) = self.last_learned_mod_source.write().unwrap().take() {
+                // 4. A value was learned! Update the UI state.
+                match &mut self.engine_states[engine_index] {
+                    EngineState::Wavetable(state) => {
+                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index) {
+                            routing.source = ModSource::MidiCC(control_id);
+                        }
+                    }
+                    EngineState::Sampler(state) => {
+                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index) {
+                            routing.source = ModSource::MidiCC(control_id);
+                        }
+                    }
+                }
+                // 5. Clear the learn target, ending the learn mode.
+                *self.midi_mod_matrix_learn_target.write().unwrap() = None;
             }
         }
 

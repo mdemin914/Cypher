@@ -72,6 +72,66 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         });
                     });
 
+                    // --- Instruments Section ---
+                    ui.collapsing(RichText::new("Instruments").strong().color(theme.label_color), |ui| {
+                        let params = [
+                            ControllableParameter::SynthToggleActive,
+                            ControllableParameter::SynthMasterVolume,
+                            ControllableParameter::SamplerToggleActive,
+                            ControllableParameter::SamplerMasterVolume,
+                        ];
+                        for (i, param) in params.iter().enumerate() {
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, *param, &reverse_lookup, app);
+                            });
+                        }
+                    });
+
+                    // --- Audio Input Section ---
+                    ui.collapsing(RichText::new("Audio Input").strong().color(theme.label_color), |ui| {
+                        let params = [
+                            ControllableParameter::InputToggleArm,
+                            ControllableParameter::InputToggleMonitor,
+                        ];
+                        for (i, param) in params.iter().enumerate() {
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, *param, &reverse_lookup, app);
+                            });
+                        }
+                    });
+
+                    // --- Transport Section ---
+                    ui.collapsing(RichText::new("Transport").strong().color(theme.label_color), |ui| {
+                        let params = [
+                            ControllableParameter::TransportTogglePlay,
+                            ControllableParameter::TransportToggleMuteAll,
+                            ControllableParameter::TransportClearAll,
+                            ControllableParameter::TransportToggleRecord,
+                        ];
+                        for (i, param) in params.iter().enumerate() {
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, *param, &reverse_lookup, app);
+                            });
+                        }
+                    });
+
+                    // --- Master Section ---
+                    ui.collapsing(RichText::new("Master").strong().color(theme.label_color), |ui| {
+                        let params = [
+                            ControllableParameter::MasterVolume,
+                            ControllableParameter::LimiterThreshold,
+                        ];
+                        for (i, param) in params.iter().enumerate() {
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, *param, &reverse_lookup, app);
+                            });
+                        }
+                    });
+
                     // --- Looper Triggers Section ---
                     ui.collapsing(RichText::new("Loopers").strong().color(theme.label_color), |ui| {
                         for i in 0..NUM_LOOPERS {
@@ -87,6 +147,20 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                     ui.collapsing(RichText::new("Mixer").strong().color(theme.label_color), |ui| {
                         for i in 0..NUM_LOOPERS {
                             let param = ControllableParameter::MixerVolume(i);
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, param, &reverse_lookup, app);
+                            });
+                        }
+                        for i in 0..NUM_LOOPERS {
+                            let param = ControllableParameter::MixerToggleMute(i);
+                            let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::none().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, param, &reverse_lookup, app);
+                            });
+                        }
+                        for i in 0..NUM_LOOPERS {
+                            let param = ControllableParameter::MixerToggleSolo(i);
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
                             Frame::none().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, param, &reverse_lookup, app);

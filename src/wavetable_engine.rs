@@ -1,3 +1,4 @@
+// src/wavetable_engine.rs
 use crate::synth::{
     Adsr, AdsrSettings, Engine, Filter, FilterSettings, Lfo, LfoRateMode, LfoSettings,
     ModDestination, ModRouting, ModSource, WAVETABLE_SIZE,
@@ -394,7 +395,7 @@ impl Voice {
         for routing in mod_matrix.iter() {
             let source_val = match routing.source {
                 // These are handled in the outer loop
-                ModSource::Lfo1 | ModSource::Lfo2 | ModSource::Static => continue,
+                ModSource::Lfo1 | ModSource::Lfo2 | ModSource::Static | ModSource::MidiCC(_) => continue,
                 // Voice-specific sources
                 ModSource::Env2 => self.last_env2_value,
                 ModSource::Velocity => self.velocity,
@@ -592,7 +593,12 @@ impl WavetableEngine {
 }
 
 impl Engine for WavetableEngine {
-    fn process(&mut self, output_buffer: &mut [f32], transport_len_samples: usize) {
+    fn process(
+        &mut self,
+        output_buffer: &mut [f32],
+        transport_len_samples: usize,
+        midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
+    ) {
         let block_size = output_buffer.len();
         output_buffer.fill(0.0); // Clear the output buffer initially
 
@@ -652,6 +658,9 @@ impl Engine for WavetableEngine {
                             ModSource::Lfo1 => lfo1_output[i],
                             ModSource::Lfo2 => lfo2_output[i],
                             ModSource::Static => 1.0,
+                            ModSource::MidiCC(id) => {
+                                midi_cc_values[id.channel as usize][id.cc as usize].load(Ordering::Relaxed) as f32 / 1_000_000.0
+                            }
                             ModSource::Env2 | ModSource::Velocity => continue,
                         };
                         let mod_val = source_val * routing.amount;
@@ -704,6 +713,9 @@ impl Engine for WavetableEngine {
                     ModSource::Lfo1 => lfo1_val,
                     ModSource::Lfo2 => lfo2_val,
                     ModSource::Static => 1.0,
+                    ModSource::MidiCC(id) => {
+                        midi_cc_values[id.channel as usize][id.cc as usize].load(Ordering::Relaxed) as f32 / 1_000_000.0
+                    }
                     _ => 0.0, // Env2 and Velocity are 0 when idle
                 };
                 let mod_val = source_val * routing.amount;

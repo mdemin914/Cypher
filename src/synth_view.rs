@@ -1,7 +1,9 @@
+// src/ui/synth_view.rs
 use crate::app::{CypherApp, EngineState, SynthUISection};
 use crate::asset::Asset;
 use crate::audio_engine::AudioCommand;
 use crate::sampler_engine::{self, SamplerVisualizerSnapshot, NUM_SAMPLE_SLOTS};
+use crate::settings::MidiControlId;
 use crate::synth::{
     AdsrSettings, FilterMode, LfoRateMode, LfoWaveform, ModDestination, ModRouting, ModSource,
 };
@@ -11,7 +13,7 @@ use crate::wavetable_engine::{
 };
 use egui::{
     epaint::{self, PathShape, RectShape, StrokeKind},
-    lerp, pos2, style::Widgets, Align, Align2, Color32, ComboBox, DragAndDrop, DragValue, Frame,
+    lerp, pos2, style::Widgets, Align, Align2, Button, Color32, ComboBox, DragAndDrop, DragValue, Frame,
     ProgressBar, Rect, RichText, Rounding, ScrollArea, SelectableLabel, Sense, Shape, Slider,
     Stroke, Ui, Vec2, Window,
 };
@@ -1111,12 +1113,19 @@ fn draw_mod_matrix_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
                     visuals.hovered.bg_fill = theme.control_hover_bg;
                     visuals.active.bg_fill = theme.control_hover_bg;
 
+                    let source_text = if let ModSource::MidiCC(id) = routing.source {
+                        format!("MIDI CC {} (Ch {})", id.cc, id.channel + 1)
+                    } else {
+                        routing.source.to_string()
+                    };
+
                     ComboBox::new(format!("source_{}_{}", engine_index, i), "")
-                        .selected_text(routing.source.to_string())
+                        .selected_text(source_text)
                         .show_ui(ui, |ui| {
                             let style = ui.style_mut();
                             style.visuals.panel_fill = theme.combo_popup_bg;
                             style.visuals.selection.bg_fill = theme.combo_selection_bg;
+
                             for source in ModSource::ALL {
                                 if ui.add(SelectableLabel::new(
                                     routing.source == source,
@@ -1164,6 +1173,27 @@ fn draw_mod_matrix_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
                         });
                 });
 
+                let is_learning_this = {
+                    let learn_target = app.midi_mod_matrix_learn_target.read().unwrap();
+                    *learn_target == Some((engine_index, i))
+                };
+                let learn_button_text = if is_learning_this { "Listening..." } else { "Learn" };
+                let learn_button = Button::new(learn_button_text).fill(if is_learning_this {
+                    theme.button_active_bg
+                } else {
+                    theme.button_bg
+                });
+
+                if ui.add(learn_button).clicked() {
+                    let mut learn_target = app.midi_mod_matrix_learn_target.write().unwrap();
+                    *learn_target = if is_learning_this {
+                        None
+                    } else {
+                        *app.last_learned_mod_source.write().unwrap() = None;
+                        Some((engine_index, i))
+                    };
+                }
+
                 ui.scope(|ui| {
                     ui.style_mut().visuals.slider_trailing_fill = true;
                     let visuals = &mut ui.style_mut().visuals.widgets;
@@ -1190,7 +1220,6 @@ fn draw_mod_matrix_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
 
         if custom_button(ui, "+ Add Routing", &theme).clicked() {
             if matrix.len() < 16 {
-                // Safety limit
                 matrix.push(ModRouting::default());
                 matrix_changed = true;
             }
