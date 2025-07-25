@@ -62,7 +62,7 @@ This project is a showcase of modern, high-performance audio development in Rust
 
 Contributions are welcome and highly appreciated! Whether you're a musician, a developer, or a designer, there are many ways to help out:
 
-*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance.
+*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance, feel free to fork and build uppon the core of Cypher.
 *   **Testing:** Finding and reporting bugs and providing feedback on usability.
 *   **Design:** Creating new themes or designing synth presets and sampler kits to be bundled with the application.
 *   **Documentation:** Improving this README, adding code comments, or writing user guides.
