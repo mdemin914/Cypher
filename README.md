@@ -38,11 +38,15 @@ Cypher combines several powerful tools into a single, cohesive application:
 
 *   **Extensible and Customizable:**
     *   **Fully Themeable UI:** Every color in the application is defined in a simple JSON file. A built-in theme editor allows you to create, save, and share your own visual styles.
+    *   
         <img width="418" height="437" alt="image" src="https://github.com/user-attachments/assets/b3025364-1abf-4b5f-8473-472dbca1e970" />
     *   **Asset Library:** Cypher automatically scans a dedicated directory for your Samples, Synth Presets, Sampler Kits, and Themes, organizing them in a convenient browser.
         <img width="1001" height="208" alt="image" src="https://github.com/user-attachments/assets/b59f2914-2a55-4f07-a5f7-e17cad00195c" />
     *   **Options Menu:** Cypher has its own low latency audio implementation, including jack for linux. 
-        <img width="559" height="451" alt="image" src="https://github.com/user-attachments/assets/ce53e278-3813-461f-80e4-7bf58164a4d9" />
+        <img width="555" height="471" alt="image" src="https://github.com/user-attachments/assets/7b545dc0-9d0b-43e2-ba7a-4f0cc69953a0" />
+    *   **Midi Mapping:** Cypher has midi mapping making controlability even easyer using a midi controller or midi keyboard.
+        <img width="1095" height="952" alt="image" src="https://github.com/user-attachments/assets/678ab021-7780-49c8-864a-cf1d50b33abb" />
+
 
 ## Technology Stack
 
