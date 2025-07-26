@@ -8,6 +8,19 @@ Built with performance and stability in mind, Cypher leverages the power of Rust
 
 <img width="3432" height="1386" alt="image" src="https://github.com/user-attachments/assets/47020498-bbb3-4255-b345-d1d1c19afea0" />
 
+## Getting Started
+
+### Pre-Built Binaries
+
+The easiest way to try Cypher is by downloading a pre-built binary for your operating system. You can find the latest versions in the shared folder below:
+
+**[Download the latest pre-builds from Mega.nz](https://mega.nz/folder/H7JhUR6Z#7JN2BNm_6-GsgHighvP4Dg)**
+
+I currently provide builds for the following platforms:
+
+*   **Windows (x86_64):** A standard pre-built version for Windows.
+*   **Linux (aarch64 / ARM):** A dedicated version for 64-bit ARM devices. Please note, this build is created and tested specifically on an **Orange Pi 5 Plus (16GB)** running the Ubuntu LTS image provided by **joshua-riek**.
+
 ## Core Features
 
 Cypher combines several powerful tools into a single, cohesive application:
