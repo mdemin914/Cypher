@@ -1131,6 +1131,8 @@ impl CypherApp {
         }
     }
     
+    //
+    
 
     pub fn load_kit(&mut self, path: &PathBuf) {
         // --- FIX START: Resolve the path first to handle both absolute and relative inputs ---
