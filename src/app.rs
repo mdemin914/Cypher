@@ -1130,9 +1130,20 @@ impl CypherApp {
             }
         }
     }
+    
 
     pub fn load_kit(&mut self, path: &PathBuf) {
-        if let Ok(json_string) = fs::read_to_string(path) {
+        // --- FIX START: Resolve the path first to handle both absolute and relative inputs ---
+        let absolute_path = if path.is_absolute() {
+            path.clone()
+        } else if let Some(config_dir) = settings::get_config_dir() {
+            config_dir.join(path)
+        } else {
+            path.clone() // Fallback
+        };
+        // --- FIX END ---
+
+        if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             if let Ok(kit) = serde_json::from_str::<SamplerKit>(&json_string) {
                 for (i, pad_path) in kit.pads.into_iter().enumerate() {
                     if let Some(p) = pad_path {
@@ -1150,13 +1161,43 @@ impl CypherApp {
                         self.send_command(AudioCommand::ClearSample { pad_index: i });
                     }
                 }
-                self.settings.last_sampler_kit = Some(path.to_path_buf());
+
+                // Convert the kit path to be relative for portability before saving.
+                if let Some(config_dir) = settings::get_config_dir() {
+                    if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
+                        // Success: store the portable, relative path.
+                        self.settings.last_sampler_kit = Some(relative_path.to_path_buf());
+                    } else {
+                        // Fallback: the kit is outside the portable folder, store its absolute path.
+                        self.settings.last_sampler_kit = Some(absolute_path);
+                    }
+                } else {
+                    // Fallback: can't get config dir, store absolute path.
+                    self.settings.last_sampler_kit = Some(absolute_path);
+                }
             }
+        } else {
+            eprintln!("Failed to read kit file: {}", absolute_path.display());
         }
     }
 
     pub fn load_preset_from_path(&mut self, path: &Path) {
-        if let Ok(json_string) = fs::read_to_string(path) {
+        // --- Step 1: Resolve the incoming path to an absolute one for reading ---
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(config_dir) = settings::get_config_dir() {
+            config_dir.join(path)
+        } else {
+            path.to_path_buf() // Fallback
+        };
+
+        if !absolute_path.exists() {
+            eprintln!("Preset file not found: {}", absolute_path.display());
+            return;
+        }
+
+        // --- Step 2: Read the file and parse the preset ---
+        if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             if let Ok(preset) = serde_json::from_str::<SynthPreset>(&json_string) {
                 let mut commands_to_send = Vec::new();
                 let mut sampler_loads_to_perform = Vec::new();
@@ -1168,9 +1209,9 @@ impl CypherApp {
                     if let SynthEnginePreset::Wavetable(engine_preset) = &preset.engine_presets[i]
                     {
                         for k in 0..4 {
-                            if let WavetableSource::File(path) = &engine_preset.wavetable_sources[k]
+                            if let WavetableSource::File(p) = &engine_preset.wavetable_sources[k]
                             {
-                                if let Some(resolved_path) = self.resolve_path(path) {
+                                if let Some(resolved_path) = self.resolve_path(p) {
                                     if let Ok(source_audio) =
                                         load_source_audio_file_with_sr(&resolved_path)
                                     {
@@ -1310,12 +1351,12 @@ impl CypherApp {
                                 // Defer the actual loading until after this loop
                                 for (k, path_opt) in engine_preset.sample_paths.iter().enumerate()
                                 {
-                                    if let Some(path) = path_opt {
-                                        if let Some(resolved_path) = self.resolve_path(path) {
+                                    if let Some(p) = path_opt {
+                                        if let Some(resolved_path) = self.resolve_path(p) {
                                             sampler_loads_to_perform
                                                 .push((i, k, resolved_path.clone()));
                                         } else {
-                                            eprintln!("Sample file not found: {:?}", path);
+                                            eprintln!("Sample file not found: {:?}", p);
                                         }
                                     }
                                 }
@@ -1369,10 +1410,23 @@ impl CypherApp {
                 for cmd in commands_to_send {
                     self.send_command(cmd);
                 }
-                for (engine_idx, slot_idx, path) in sampler_loads_to_perform {
-                    self.load_sample_for_sampler_slot(engine_idx, slot_idx, path);
+                for (engine_idx, slot_idx, p) in sampler_loads_to_perform {
+                    self.load_sample_for_sampler_slot(engine_idx, slot_idx, p);
                 }
-                self.settings.last_synth_preset = Some(path.to_path_buf());
+
+                // --- Step 3: THE FIX - Store a relative path if possible ---
+                if let Some(config_dir) = settings::get_config_dir() {
+                    if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
+                        // Success: store the portable, relative path.
+                        self.settings.last_synth_preset = Some(relative_path.to_path_buf());
+                    } else {
+                        // Fallback: the preset is outside the portable folder, store its absolute path.
+                        self.settings.last_synth_preset = Some(absolute_path);
+                    }
+                } else {
+                    // Fallback: can't get config dir, store absolute path.
+                    self.settings.last_synth_preset = Some(absolute_path);
+                }
             }
         }
     }
@@ -1506,18 +1560,43 @@ impl CypherApp {
             }
         }
     }
+    
 
     pub fn load_theme_from_path(&mut self, path: &Path) {
-        if let Ok(json_string) = fs::read_to_string(path) {
+        // --- Step 1: Resolve the path if it's relative ---
+        // The `path` coming from settings might be relative. We need its absolute form to read it.
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(config_dir) = settings::get_config_dir() {
+            config_dir.join(path)
+        } else {
+            path.to_path_buf() // Fallback
+        };
+
+        // --- Step 2: Try to read the theme file from the resolved absolute path ---
+        if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             match serde_json::from_str::<Theme>(&json_string) {
                 Ok(loaded_theme) => {
+                    // --- Step 3: THE FIX ---
+                    // Now, store a relative path back into settings if possible.
                     self.theme = loaded_theme;
-                    self.settings.last_theme = Some(path.to_path_buf());
+                    if let Some(config_dir) = settings::get_config_dir() {
+                        if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
+                            // Store the nice, portable, relative path
+                            self.settings.last_theme = Some(relative_path.to_path_buf());
+                        } else {
+                            // The theme is outside our portable folder, store absolute path as a fallback
+                            self.settings.last_theme = Some(absolute_path);
+                        }
+                    } else {
+                        // Can't get config dir, store absolute path
+                        self.settings.last_theme = Some(absolute_path);
+                    }
                 }
                 Err(e) => {
                     eprintln!(
                         "Failed to parse theme file '{}', using default. Error: {}",
-                        path.display(),
+                        absolute_path.display(),
                         e
                     );
                     self.theme = Theme::default();
@@ -1526,7 +1605,7 @@ impl CypherApp {
         } else {
             eprintln!(
                 "Failed to read theme file '{}', using default.",
-                path.display()
+                absolute_path.display()
             );
             self.theme = Theme::default();
         }
