@@ -8,6 +8,19 @@ Built with performance and stability in mind, Cypher leverages the power of Rust
 
 <img width="3432" height="1386" alt="image" src="https://github.com/user-attachments/assets/47020498-bbb3-4255-b345-d1d1c19afea0" />
 
+## Getting Started
+
+### Pre-Built Binaries
+
+The easiest way to try Cypher is by downloading a pre-built binary for your operating system. You can find the latest versions in the shared folder below:
+
+**[Download the latest pre-builds from Mega.nz](https://mega.nz/folder/H7JhUR6Z#7JN2BNm_6-GsgHighvP4Dg)**
+
+I currently provide builds for the following platforms:
+
+*   **Windows (x86_64):** A standard pre-built version for Windows.
+*   **Linux (aarch64 / ARM):** A dedicated version for 64-bit ARM devices. Please note, this build is created and tested specifically on an **Orange Pi 5 Plus (16GB)** running the Ubuntu LTS image provided by **joshua-riek**.
+
 ## Core Features
 
 Cypher combines several powerful tools into a single, cohesive application:
@@ -38,11 +51,15 @@ Cypher combines several powerful tools into a single, cohesive application:
 
 *   **Extensible and Customizable:**
     *   **Fully Themeable UI:** Every color in the application is defined in a simple JSON file. A built-in theme editor allows you to create, save, and share your own visual styles.
+    *   
         <img width="418" height="437" alt="image" src="https://github.com/user-attachments/assets/b3025364-1abf-4b5f-8473-472dbca1e970" />
     *   **Asset Library:** Cypher automatically scans a dedicated directory for your Samples, Synth Presets, Sampler Kits, and Themes, organizing them in a convenient browser.
         <img width="1001" height="208" alt="image" src="https://github.com/user-attachments/assets/b59f2914-2a55-4f07-a5f7-e17cad00195c" />
     *   **Options Menu:** Cypher has its own low latency audio implementation, including jack for linux. 
-        <img width="559" height="451" alt="image" src="https://github.com/user-attachments/assets/ce53e278-3813-461f-80e4-7bf58164a4d9" />
+        <img width="555" height="471" alt="image" src="https://github.com/user-attachments/assets/7b545dc0-9d0b-43e2-ba7a-4f0cc69953a0" />
+    *   **Midi Mapping:** Cypher has midi mapping making controlability even easyer using a midi controller or midi keyboard.
+        <img width="1095" height="952" alt="image" src="https://github.com/user-attachments/assets/678ab021-7780-49c8-864a-cf1d50b33abb" />
+
 
 ## Technology Stack
 
@@ -58,7 +75,7 @@ This project is a showcase of modern, high-performance audio development in Rust
 
 Contributions are welcome and highly appreciated! Whether you're a musician, a developer, or a designer, there are many ways to help out:
 
-*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance.
+*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance, feel free to fork and build uppon the core of Cypher.
 *   **Testing:** Finding and reporting bugs and providing feedback on usability.
 *   **Design:** Creating new themes or designing synth presets and sampler kits to be bundled with the application.
 *   **Documentation:** Improving this README, adding code comments, or writing user guides.
