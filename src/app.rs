@@ -1131,11 +1131,8 @@ impl CypherApp {
         }
     }
     
-    //
-    
 
     pub fn load_kit(&mut self, path: &PathBuf) {
-        // --- FIX START: Resolve the path first to handle both absolute and relative inputs ---
         let absolute_path = if path.is_absolute() {
             path.clone()
         } else if let Some(config_dir) = settings::get_config_dir() {
@@ -1143,7 +1140,7 @@ impl CypherApp {
         } else {
             path.clone() // Fallback
         };
-        // --- FIX END ---
+
 
         if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             if let Ok(kit) = serde_json::from_str::<SamplerKit>(&json_string) {
@@ -1416,7 +1413,7 @@ impl CypherApp {
                     self.load_sample_for_sampler_slot(engine_idx, slot_idx, p);
                 }
 
-                // --- Step 3: THE FIX - Store a relative path if possible ---
+                // --- Step 3: Store a relative path if possible ---
                 if let Some(config_dir) = settings::get_config_dir() {
                     if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
                         // Success: store the portable, relative path.
