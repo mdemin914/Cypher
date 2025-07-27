@@ -1,9 +1,11 @@
+// src/ui/main_view.rs
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
 use crate::looper::{LooperState, NUM_LOOPERS};
 use crate::settings;
 use crate::synth_view;
 use crate::ui;
+use crate::ui::about_view::draw_about_window; // <-- ADDED THIS LINE
 use crate::ui::midi_mapping_view::draw_midi_mapping_window;
 use crate::ui::mixer_view::horizontal_volume_fader;
 use crate::ui::slicer_view::draw_slicer_window;
@@ -36,6 +38,9 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     }
     if app.midi_mapping_window_open {
         draw_midi_mapping_window(app, ctx);
+    }
+    if app.about_window_open {
+        draw_about_window(app, ctx); // <-- CHANGED THIS LINE
     }
 
     // --- Draw Notification Overlay ---

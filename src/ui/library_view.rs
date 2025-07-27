@@ -1,3 +1,4 @@
+// src/ui/library_view.rs
 use crate::app::{CypherApp, LibraryView};
 use crate::asset::{Asset, AssetRef, SampleRef};
 use crate::audio_engine::AudioCommand;
@@ -99,30 +100,26 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             let theme = app.theme.clone();
 
             ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                // --- NEW: Height-aware responsive grid logic ---
                 const CARD_HEIGHT: f32 = 80.0;
                 const SPACING: f32 = 10.0;
                 let cell_height = CARD_HEIGHT + SPACING;
 
                 let total_items = current_folder.subfolders.len() + current_folder.assets.len();
                 if total_items == 0 {
-                    return; // Nothing to draw
+                    return;
                 }
 
-                // 1. Calculate how many rows can fit in the available vertical space.
                 let available_height = ui.available_height();
                 let max_rows_possible = max(1, (available_height / cell_height).floor() as usize);
-
-                // 2. Calculate how many columns we need to fit all items into that many rows.
                 let num_cols = (total_items as f32 / max_rows_possible as f32).ceil() as usize;
-
-                // 3. Use egui::Grid to lay out the items.
                 let mut item_index = 0;
+
                 egui::Grid::new("responsive_asset_grid")
                     .spacing([SPACING, SPACING])
                     .show(ui, |ui| {
                         for folder_name in current_folder.subfolders.keys() {
-                            if draw_folder_card(ui, folder_name, &theme).clicked() {
+                            let response = draw_folder_card(ui, folder_name, &theme);
+                            if response.is_pointer_button_down_on() {
                                 app.library_path.push(folder_name.clone());
                             }
                             item_index += 1;
@@ -137,23 +134,34 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                                     draw_asset_card(ui, sample_ref, "🎵", asset.clone(), Sense::drag(), &theme)
                                 }
                                 Asset::SynthPreset(preset_ref) => {
-                                    draw_asset_card(ui, preset_ref, "🎹", asset.clone(), Sense::click_and_drag(), &theme)
+                                    draw_asset_card(ui, preset_ref, "🎹", asset.clone(), Sense::click(), &theme)
                                 }
                                 Asset::SamplerKit(kit_ref) => {
-                                    draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click_and_drag(), &theme)
+                                    draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click(), &theme)
                                 }
                                 Asset::Session(session_ref) => {
                                     draw_asset_card(ui, session_ref, "💾", asset.clone(), Sense::click(), &theme)
                                 }
                             };
 
-                            if response.clicked() {
-                                match asset {
-                                    Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
-                                    Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
-                                    Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
-                                    _ => {}
+                            let button_id = response.id;
+                            if response.is_pointer_button_down_on() {
+                                let was_already_pressed = ui.memory_mut(|m| {
+                                    let already_pressed = m.data.get_temp_mut_or_default::<bool>(button_id);
+                                    if *already_pressed { true } else { *already_pressed = true; false }
+                                });
+
+                                if !was_already_pressed {
+                                    match asset {
+                                        Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
+                                        Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
+                                        Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
+                                        _ => {}
+                                    }
                                 }
+                            } else {
+                                // Reset the flag when the button is not held down
+                                ui.memory_mut(|m| m.data.insert_temp(button_id, false));
                             }
 
                             item_index += 1;

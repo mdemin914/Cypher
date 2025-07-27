@@ -9,6 +9,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
     let mut save_and_close = false;
     let mut apply_was_clicked = false;
     let mut host_changed = false;
+    let mut close_options_and_open_about = false; // <-- NEW FLAG
 
     Window::new("Options")
         .open(&mut app.options_window_open)
@@ -16,7 +17,6 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
         .resizable(false)
         .default_width(450.0)
         .show(ctx, |ui| {
-            // **FIXED**: Use ui.style_mut() to get a mutable reference to the style.
             let style = ui.style_mut();
             style.visuals.widgets.inactive.bg_fill = app.theme.options_window.widget_bg;
             style.visuals.widgets.hovered.bg_fill = app.theme.options_window.widget_bg.linear_multiply(1.2);
@@ -214,11 +214,27 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
             ui.separator();
             ui.add_space(10.0);
 
-            let save_button = Button::new("Save and Close").fill(app.theme.options_window.widget_bg);
-            if ui.add(save_button).clicked() {
-                save_and_close = true;
-            }
+            ui.horizontal(|ui| {
+                if ui.add(Button::new("About Cypher").fill(app.theme.options_window.widget_bg)).clicked() {
+                    // This now sets our local flag instead of borrowing `app` mutably.
+                    close_options_and_open_about = true;
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save_button = Button::new("Save and Close").fill(app.theme.options_window.widget_bg);
+                    if ui.add(save_button).clicked() {
+                        save_and_close = true;
+                    }
+                });
+            });
         });
+
+    // --- Actions are now performed AFTER the window's mutable borrow is released ---
+
+    if close_options_and_open_about {
+        app.about_window_open = true;
+        app.options_window_open = false;
+    }
 
     if host_changed {
         app.on_host_changed();

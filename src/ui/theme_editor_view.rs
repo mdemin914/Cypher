@@ -514,6 +514,27 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     ui.end_row();
                                 });
                             });
+
+                        // --- NEW SECTION ---
+                        CollapsingHeader::new("About Window")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                let theme = &mut app.theme.about_window;
+                                Grid::new("about_window_theme").show(ui, |ui| {
+                                    ui.label("Background");
+                                    ui.color_edit_button_srgba(&mut theme.background);
+                                    ui.end_row();
+                                    ui.label("Heading Text");
+                                    ui.color_edit_button_srgba(&mut theme.heading_color);
+                                    ui.end_row();
+                                    ui.label("Body Text");
+                                    ui.color_edit_button_srgba(&mut theme.text_color);
+                                    ui.end_row();
+                                    ui.label("Hyperlink Text");
+                                    ui.color_edit_button_srgba(&mut theme.link_color);
+                                    ui.end_row();
+                                });
+                            });
                     });
             });
         });

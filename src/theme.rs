@@ -1,3 +1,4 @@
+// src/theme.rs
 use crate::looper::NUM_LOOPERS;
 use egui::{epaint, Color32, CornerRadius, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
@@ -166,9 +167,14 @@ fn default_midi_mapping_row_even_bg() -> Color32 { Color32::from_rgba_unmultipli
 fn default_midi_mapping_row_odd_bg() -> Color32 { Color32::from_rgba_unmultiplied(0, 44, 60, 255) }
 fn default_midi_mapping_header_bg() -> Color32 { Color32::from_rgba_unmultiplied(19, 0, 54, 255) }
 
+// --- NEW DEFAULTS FOR ABOUT WINDOW ---
+fn default_about_window_bg() -> Color32 { Color32::from_rgba_unmultiplied(15, 10, 35, 255) }
+fn default_about_window_heading() -> Color32 { Color32::from_rgba_unmultiplied(255, 133, 0, 255) }
+fn default_about_window_text() -> Color32 { Color32::from_rgba_unmultiplied(200, 200, 220, 255) }
+fn default_about_window_link() -> Color32 { Color32::from_rgba_unmultiplied(110, 180, 255, 255) }
+
 
 // --- Hierarchical Theme Structs ---
-// These structs now correctly point to the new default functions.
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
@@ -387,6 +393,27 @@ pub struct MidiMappingTheme {
 }
 impl Default for MidiMappingTheme { fn default() -> Self { Self { background: default_midi_mapping_background(), label_color: default_midi_mapping_label_color(), button_bg: default_midi_mapping_button_bg(), learn_button_bg: default_midi_mapping_learn_button_bg(), row_even_bg: default_midi_mapping_row_even_bg(), row_odd_bg: default_midi_mapping_row_odd_bg(), header_bg: default_midi_mapping_header_bg(), } } }
 
+// --- NEW THEME STRUCT ---
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct AboutWindowTheme {
+    #[serde(default = "default_about_window_bg")] pub background: Color32,
+    #[serde(default = "default_about_window_heading")] pub heading_color: Color32,
+    #[serde(default = "default_about_window_text")] pub text_color: Color32,
+    #[serde(default = "default_about_window_link")] pub link_color: Color32,
+}
+impl Default for AboutWindowTheme {
+    fn default() -> Self {
+        Self {
+            background: default_about_window_bg(),
+            heading_color: default_about_window_heading(),
+            text_color: default_about_window_text(),
+            link_color: default_about_window_link(),
+        }
+    }
+}
+
+// --- MAIN THEME STRUCT ---
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Theme {
@@ -407,6 +434,7 @@ pub struct Theme {
     pub piano_keys: PianoKeyTheme,
     pub slicer_window: SlicerWindowTheme,
     pub midi_mapping_window: MidiMappingTheme,
+    pub about_window: AboutWindowTheme, // <-- ADDED
 }
 
 impl Default for Theme {
@@ -428,14 +456,11 @@ impl Default for Theme {
             piano_keys: Default::default(),
             slicer_window: Default::default(),
             midi_mapping_window: Default::default(),
+            about_window: Default::default(), // <-- ADDED
         }
     }
 }
 
-
-/// Adapter to convert our custom Theme into egui::Visuals
-/// This now only sets the most basic global properties.
-/// The rest of the styling is applied directly in the UI code.
 impl From<&Theme> for Visuals {
     fn from(theme: &Theme) -> Self {
         let mut visuals = if theme.dark_mode {
@@ -445,13 +470,13 @@ impl From<&Theme> for Visuals {
         };
 
         visuals.override_text_color = Some(theme.global_text_color);
-        visuals.window_fill = default_black(); // Keep window background consistent
-        visuals.panel_fill = theme.mixer.panel_background; // For popups like combo box
+        visuals.hyperlink_color = theme.about_window.link_color; // <-- ADDED
+        visuals.window_fill = default_black();
+        visuals.panel_fill = theme.mixer.panel_background;
         visuals.window_stroke = Stroke::new(1.0, theme.window_stroke_color);
-        visuals.selection.bg_fill = theme.top_bar.transport_bar_fill; // Use a distinct selection color
+        visuals.selection.bg_fill = theme.top_bar.transport_bar_fill;
         visuals.selection.stroke = Stroke::new(1.0, theme.global_text_color);
 
-        // A generic default for un-themed widgets
         visuals.widgets.inactive.bg_fill = theme.instrument_panel.button_bg;
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_gray(80));
         visuals.widgets.hovered.bg_fill = theme.instrument_panel.button_bg.linear_multiply(1.5);
