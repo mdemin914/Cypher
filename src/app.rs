@@ -177,7 +177,9 @@ pub struct CypherApp {
     _output_stream: Option<Stream>,
     _midi_connection: Option<MidiInputConnection<()>>,
     _command_thread_handle: Option<JoinHandle<()>>,
+    _midi_timer_handle: Option<JoinHandle<()>>, // <-- ADDED
     command_sender: Option<mpsc::Sender<AudioCommand>>,
+    midi_timer_should_exit: Arc<AtomicBool>, // <-- ADDED
 
     // --- UI / Shared State ---
     pub looper_states: Vec<SharedLooperState>,
@@ -351,7 +353,6 @@ impl CypherApp {
         let master_peak_meter = Arc::new(AtomicU32::new(0));
         let should_toggle_record_from_midi = Arc::new(AtomicBool::new(false));
 
-        // **FIX**: Initialize the live MIDI map from the `settings` variable that was just loaded.
         let midi_mappings = Arc::new(RwLock::new(settings.midi_mappings.clone()));
 
         // Create the shared state for MIDI CC values
@@ -380,7 +381,9 @@ impl CypherApp {
             _output_stream: None,
             _midi_connection: None,
             _command_thread_handle: None,
+            _midi_timer_handle: None, // <-- INITIALIZED
             command_sender: None,
+            midi_timer_should_exit: Arc::new(AtomicBool::new(false)), // <-- INITIALIZED
             looper_states: Vec::new(),
             transport_playhead: Arc::new(AtomicUsize::new(0)),
             transport_len_samples: Arc::new(AtomicUsize::new(0)),
@@ -787,6 +790,18 @@ impl CypherApp {
     }
 
     pub fn stop_audio(&mut self) {
+        // --- MODIFIED ---
+        // Signal the timer thread to exit and wait for it.
+        self.midi_timer_should_exit.store(true, Ordering::Relaxed);
+        if let Some(handle) = self._midi_timer_handle.take() {
+            if let Err(e) = handle.join() {
+                eprintln!("Error joining MIDI timer thread: {:?}", e);
+            }
+        }
+        // Reset the flag for the next time audio starts.
+        self.midi_timer_should_exit.store(false, Ordering::Relaxed);
+        // --- END MODIFIED ---
+
         self._midi_connection.take();
         self.command_sender.take();
         if let Some(handle) = self._command_thread_handle.take() {
@@ -1002,12 +1017,25 @@ impl CypherApp {
     }
 
     pub fn reconnect_midi(&mut self) -> Result<()> {
+        // --- MODIFIED ---
+        // Signal the old timer thread to exit and wait for it.
+        self.midi_timer_should_exit.store(true, Ordering::Relaxed);
+        if let Some(handle) = self._midi_timer_handle.take() {
+            // We can ignore the result here on reconnect, as the main shutdown
+            // is handled in stop_audio and on_exit.
+            let _ = handle.join();
+        }
+        // Reset the flag for the new timer thread.
+        self.midi_timer_should_exit.store(false, Ordering::Relaxed);
+        // --- END MODIFIED ---
+
         self._midi_connection = None;
         if let (Some(index), Some(sender)) =
             (self.selected_midi_port_index, self.command_sender.as_ref())
         {
             if let Some(port_info) = self.midi_ports.get(index) {
-                self._midi_connection = Some(midi::connect_midi(
+                // --- MODIFIED ---
+                let (conn, handle) = midi::connect_midi(
                     sender.clone(),
                     self.live_midi_notes.clone(),
                     port_info.1.clone(),
@@ -1017,7 +1045,10 @@ impl CypherApp {
                     self.midi_cc_values.clone(),
                     self.midi_mod_matrix_learn_target.clone(),
                     self.last_learned_mod_source.clone(),
-                )?);
+                    self.midi_timer_should_exit.clone(), // Pass the signal
+                )?;
+                self._midi_connection = Some(conn);
+                self._midi_timer_handle = Some(handle); // Store the new handle
             }
         }
         Ok(())
@@ -1052,10 +1083,8 @@ impl CypherApp {
         self.settings.input_latency_compensation_ms =
             self.input_latency_compensation_ms.load(Ordering::Relaxed) as f32 / 100.0;
 
-        // **FIX**: The live BTreeMap is now copied to the serializable Vec inside the function we call.
         self.settings.midi_mappings = self.midi_mappings.read().unwrap().clone();
 
-        // **THE FIX IS HERE**: Pass a mutable reference.
         settings::save_settings(&mut self.settings);
         self.bpm_rounding_setting_changed_unapplied = false;
     }
@@ -1130,7 +1159,7 @@ impl CypherApp {
             }
         }
     }
-    
+
 
     pub fn load_kit(&mut self, path: &PathBuf) {
         let absolute_path = if path.is_absolute() {
@@ -1559,7 +1588,7 @@ impl CypherApp {
             }
         }
     }
-    
+
 
     pub fn load_theme_from_path(&mut self, path: &Path) {
         // --- Step 1: Resolve the path if it's relative ---
