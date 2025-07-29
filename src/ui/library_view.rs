@@ -6,7 +6,7 @@ use crate::sampler::SamplerKit;
 use crate::settings;
 use crate::ui;
 use egui::{
-    epaint, vec2, Align, Align2, Button, Color32, DragAndDrop, Frame, Id, Layout, Response,
+    epaint, vec2, Align, Align2, Button, Color32, DragAndDrop, Frame, Id, Layout, Margin, Response,
     RichText, Rounding, ScrollArea, Sense, Stroke, Ui, Window,
 };
 use rfd::FileDialog;
@@ -16,13 +16,26 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+// A small distance threshold. If the user presses and releases within this distance,
+// it's considered a click, even if they wiggled their finger slightly.
+const CLICK_DRAG_THRESHOLD: f32 = 5.0;
+
 pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none().fill(app.theme.library.panel_background);
+    let frame = Frame::none()
+        .fill(app.theme.library.panel_background)
+        // --- THIS IS THE FIX ---
+        .inner_margin(Margin { left: 0, right: 0, top: 8, bottom: 8 });
+
     frame.show(ui, |ui| {
-        ui.set_min_height(210.0);
+        ui.set_min_height(250.0);
         // --- TOP TOOLBAR ---
         ui.horizontal(|ui| {
-            if ui.add(Button::new("Rescan Library").fill(app.theme.library.button_bg)).clicked() {
+            let button_min_size = vec2(80.0, 50.0);
+
+            let rescan_button = Button::new("Rescan Library")
+                .min_size(button_min_size)
+                .fill(app.theme.library.button_bg);
+            if ui.add(rescan_button).clicked() {
                 app.rescan_asset_library();
                 app.rescan_chord_styles();
             }
@@ -30,19 +43,24 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
 
             // Tab Buttons
             let sample_bg = if app.library_view == LibraryView::Samples { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            if ui.add(Button::new("Samples").fill(sample_bg)).clicked() { app.library_view = LibraryView::Samples; app.library_path.clear(); }
+            let samples_button = Button::new("Samples").min_size(button_min_size).fill(sample_bg);
+            if ui.add(samples_button).clicked() { app.library_view = LibraryView::Samples; app.library_path.clear(); }
 
             let synth_bg = if app.library_view == LibraryView::Synths { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            if ui.add(Button::new("Synths").fill(synth_bg)).clicked() { app.library_view = LibraryView::Synths; app.library_path.clear(); }
+            let synths_button = Button::new("Synths").min_size(button_min_size).fill(synth_bg);
+            if ui.add(synths_button).clicked() { app.library_view = LibraryView::Synths; app.library_path.clear(); }
 
             let kit_bg = if app.library_view == LibraryView::Kits { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            if ui.add(Button::new("Kits").fill(kit_bg)).clicked() { app.library_view = LibraryView::Kits; app.library_path.clear(); }
+            let kits_button = Button::new("Kits").min_size(button_min_size).fill(kit_bg);
+            if ui.add(kits_button).clicked() { app.library_view = LibraryView::Kits; app.library_path.clear(); }
 
             let session_bg = if app.library_view == LibraryView::Sessions { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            if ui.add(Button::new("Sessions").fill(session_bg)).clicked() { app.library_view = LibraryView::Sessions; app.library_path.clear(); }
+            let sessions_button = Button::new("Sessions").min_size(button_min_size).fill(session_bg);
+            if ui.add(sessions_button).clicked() { app.library_view = LibraryView::Sessions; app.library_path.clear(); }
 
             let keys_bg = if app.library_view == LibraryView::EightyEightKeys { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            if ui.add(Button::new("88Keys").fill(keys_bg)).clicked() { app.library_view = LibraryView::EightyEightKeys; app.library_path.clear(); }
+            let keys_button = Button::new("88Keys").min_size(button_min_size).fill(keys_bg);
+            if ui.add(keys_button).clicked() { app.library_view = LibraryView::EightyEightKeys; app.library_path.clear(); }
 
 
             // --- Path/Back button only for asset views ---
@@ -50,7 +68,10 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                 ui.separator();
 
                 if !app.library_path.is_empty() {
-                    if ui.add(Button::new("⬅ Back").fill(app.theme.library.button_bg)).clicked() {
+                    let back_button = Button::new("⬅ Back")
+                        .min_size(button_min_size)
+                        .fill(app.theme.library.button_bg);
+                    if ui.add(back_button).clicked() {
                         app.library_path.pop();
                     }
                 }
@@ -72,7 +93,7 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
 
         // --- MAIN CONTENT AREA ---
         if app.library_view == LibraryView::EightyEightKeys {
-            ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
                 ui::eighty_eight_keys_view::draw_88_keys_panel(app, ui);
             });
         } else {
@@ -100,8 +121,8 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             let theme = app.theme.clone();
 
             ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                const CARD_HEIGHT: f32 = 80.0;
-                const SPACING: f32 = 10.0;
+                const CARD_HEIGHT: f32 = 65.0;
+                const SPACING: f32 = 20.0;
                 let cell_height = CARD_HEIGHT + SPACING;
 
                 let total_items = current_folder.subfolders.len() + current_folder.assets.len();
@@ -119,7 +140,11 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                     .show(ui, |ui| {
                         for folder_name in current_folder.subfolders.keys() {
                             let response = draw_folder_card(ui, folder_name, &theme);
-                            if response.is_pointer_button_down_on() {
+
+                            let is_clicked = response.clicked()
+                                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
+
+                            if is_clicked {
                                 app.library_path.push(folder_name.clone());
                             }
                             item_index += 1;
@@ -134,34 +159,26 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                                     draw_asset_card(ui, sample_ref, "🎵", asset.clone(), Sense::drag(), &theme)
                                 }
                                 Asset::SynthPreset(preset_ref) => {
-                                    draw_asset_card(ui, preset_ref, "🎹", asset.clone(), Sense::click(), &theme)
+                                    draw_asset_card(ui, preset_ref, "🎹", asset.clone(), Sense::click_and_drag(), &theme)
                                 }
                                 Asset::SamplerKit(kit_ref) => {
-                                    draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click(), &theme)
+                                    draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click_and_drag(), &theme)
                                 }
                                 Asset::Session(session_ref) => {
-                                    draw_asset_card(ui, session_ref, "💾", asset.clone(), Sense::click(), &theme)
+                                    draw_asset_card(ui, session_ref, "💾", asset.clone(), Sense::click_and_drag(), &theme)
                                 }
                             };
 
-                            let button_id = response.id;
-                            if response.is_pointer_button_down_on() {
-                                let was_already_pressed = ui.memory_mut(|m| {
-                                    let already_pressed = m.data.get_temp_mut_or_default::<bool>(button_id);
-                                    if *already_pressed { true } else { *already_pressed = true; false }
-                                });
+                            let is_clicked = response.clicked()
+                                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
 
-                                if !was_already_pressed {
-                                    match asset {
-                                        Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
-                                        Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
-                                        Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
-                                        _ => {}
-                                    }
+                            if is_clicked {
+                                match asset {
+                                    Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
+                                    Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
+                                    Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
+                                    _ => {}
                                 }
-                            } else {
-                                // Reset the flag when the button is not held down
-                                ui.memory_mut(|m| m.data.insert_temp(button_id, false));
                             }
 
                             item_index += 1;
@@ -191,11 +208,15 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
 
 fn draw_folder_card(ui: &mut Ui, name: &str, theme: &crate::theme::Theme) -> Response {
     let size = vec2(100.0, 80.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
 
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&response);
-        let fill_color = if response.hovered() { theme.library.card_hovered_bg } else { theme.library.card_bg };
+        let fill_color = if response.hovered() || response.is_pointer_button_down_on() {
+            theme.library.card_hovered_bg
+        } else {
+            theme.library.card_bg
+        };
         let frame = Frame::group(ui.style()).rounding(visuals.rounding()).fill(fill_color).stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 
@@ -226,7 +247,11 @@ fn draw_asset_card(
 
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&response);
-        let fill_color = if response.hovered() { theme.library.card_hovered_bg } else { theme.library.card_bg };
+        let fill_color = if response.hovered() || response.is_pointer_button_down_on() {
+            theme.library.card_hovered_bg
+        } else {
+            theme.library.card_bg
+        };
         let frame = Frame::group(ui.style()).rounding(visuals.rounding()).fill(fill_color).stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 

@@ -589,6 +589,58 @@ impl CypherApp {
         }
     }
 
+    pub fn reset_wavetable_slot_to_default(
+        &mut self,
+        engine_index: usize,
+        slot_index: usize,
+    ) {
+        let default_tables = WavetableSet::new_basic();
+        if let Some(default_table) = default_tables.tables.get(slot_index) {
+            let audio_data = Arc::new(default_table.table.clone());
+            let name = default_table.name.clone();
+
+            // Update UI state
+            if let EngineState::Wavetable(wt_state) = &mut self.engine_states[engine_index] {
+                wt_state.wavetable_names[slot_index] = name.clone();
+                wt_state.wavetable_sources[slot_index] = WavetableSource::Default(name.clone());
+                wt_state.window_positions[slot_index] = 0.0;
+                wt_state.original_sources[slot_index] = audio_data.clone();
+                wt_state.source_sample_rates[slot_index] = self.active_sample_rate;
+                wt_state.force_redraw_generation += 1; // Invalidate visualizer cache
+            }
+
+            // Send command to audio thread
+            self.send_command(AudioCommand::SetWavetable {
+                engine_index,
+                slot_index,
+                audio_data,
+                name,
+            });
+        }
+    }
+
+    pub fn clear_sample_for_sampler_slot(
+        &mut self,
+        engine_index: usize,
+        slot_index: usize,
+    ) {
+        // Update UI state
+        if let EngineState::Sampler(sampler_state) = &mut self.engine_states[engine_index]
+        {
+            sampler_state.sample_names[slot_index] = "Empty".to_string();
+            sampler_state.sample_paths[slot_index] = None;
+            *sampler_state.sample_data_for_ui[slot_index].write().unwrap() = Vec::new();
+            sampler_state.force_redraw_generation += 1; // Bust the visualizer cache
+        }
+
+        // Send command to audio thread with an empty buffer to clear the slot
+        self.send_command(AudioCommand::LoadSampleForSamplerSlot {
+            engine_index,
+            slot_index,
+            audio_data: Arc::new(vec![]),
+        });
+    }
+    
     fn resolve_path(&self, path_to_resolve: &Path) -> Option<PathBuf> {
         if path_to_resolve.exists() {
             return Some(path_to_resolve.to_path_buf());
@@ -2121,6 +2173,7 @@ impl eframe::App for CypherApp {
         // --- State Updates ---
         // Must be called before any UI is drawn to ensure the display is up to date.
         self.update_theory_display();
+        //ctx.set_debug_on_hover(true); // <-- Uncomment for visual debugging of panels
 
         if self.should_toggle_record_from_midi.swap(false, Ordering::Relaxed) {
             self.is_recording_output = !self.is_recording_output;

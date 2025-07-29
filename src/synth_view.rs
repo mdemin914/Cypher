@@ -1,4 +1,4 @@
-// src/ui/synth_view.rs
+use egui::Layout;
 use crate::app::{CypherApp, EngineState, SynthUISection};
 use crate::asset::Asset;
 use crate::audio_engine::AudioCommand;
@@ -343,6 +343,7 @@ fn draw_wavetable_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize
     let theme = app.theme.synth_editor_window.clone();
     let mut changed = false;
     let mut reset_to_default = false; // New flag
+    let mut slot_to_reset = None; // New flag
 
     let frame_fill = app.theme.synth_editor_window.engine_panel_bg; // Clone theme data before borrow
 
@@ -397,6 +398,13 @@ fn draw_wavetable_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize
                                 .monospace()
                                 .color(theme.wt_slot_name_color),
                         );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if matches!(&state.wavetable_sources[i], WavetableSource::File(_)) {
+                                if ui.add(Button::new("Clear").small().fill(theme.button_bg)).clicked() {
+                                    slot_to_reset = Some(i);
+                                }
+                            }
+                        });
                     });
                     if matches!(&state.wavetable_sources[i], WavetableSource::File(_)) {
                         ui.scope(|ui| {
@@ -488,6 +496,10 @@ fn draw_wavetable_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize
         app.generate_and_send_wavetable(engine_index, slot_index, window_pos);
     }
 
+    if let Some(slot_idx) = slot_to_reset {
+        app.reset_wavetable_slot_to_default(engine_index, slot_idx);
+    }
+
     // Handle actions that need a full &mut app borrow
     if reset_to_default {
         app.initialize_wavetable_preset(engine_index);
@@ -509,6 +521,7 @@ fn draw_sampler_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) 
     let mut command_to_send: Option<AudioCommand> = None;
     let theme = app.theme.synth_editor_window.clone();
     let mut sample_to_load: Option<(usize, PathBuf)> = None;
+    let mut slot_to_clear: Option<usize> = None;
 
     // Helper function to convert MIDI note number to a name (e.g., 60 -> "C4")
     fn midi_to_note_name(note: u8) -> String {
@@ -539,6 +552,13 @@ fn draw_sampler_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) 
                             .monospace()
                             .color(app.theme.synth_editor_window.wt_slot_name_color),
                     );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if state.sample_paths[i].is_some() {
+                            if ui.add(Button::new("Clear").small().fill(theme.button_bg)).clicked() {
+                                slot_to_clear = Some(i);
+                            }
+                        }
+                    });
                 });
                 // Custom row for the slider and the note name label
                 ui.horizontal(|ui| {
@@ -621,6 +641,9 @@ fn draw_sampler_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) 
         }
     }
 
+    if let Some(slot_idx) = slot_to_clear {
+        app.clear_sample_for_sampler_slot(engine_index, slot_idx);
+    }
     if let Some((slot_index, path)) = sample_to_load {
         app.load_sample_for_sampler_slot(engine_index, slot_index, path);
     }
