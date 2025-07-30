@@ -1,4 +1,3 @@
-// src/ui/theme_editor_view.rs
 use crate::app::CypherApp;
 use crate::looper::NUM_LOOPERS;
 use egui::{collapsing_header::CollapsingHeader, Grid, ScrollArea, Window};
@@ -333,6 +332,18 @@ pub fn draw_theme_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     ui.end_row();
                                     ui.label("Row 4 Outline");
                                     ui.color_edit_button_srgba(&mut app.theme.sampler_pad_window.pad_outline_row_4_color);
+                                    ui.end_row();
+                                    ui.label("FX Panel BG");
+                                    ui.color_edit_button_srgba(&mut app.theme.sampler_pad_window.fx_panel_bg);
+                                    ui.end_row();
+                                    ui.label("FX Label");
+                                    ui.color_edit_button_srgba(&mut app.theme.sampler_pad_window.fx_label_color);
+                                    ui.end_row();
+                                    ui.label("FX Slider Track");
+                                    ui.color_edit_button_srgba(&mut app.theme.sampler_pad_window.fx_slider_track_color);
+                                    ui.end_row();
+                                    ui.label("FX Slider Grab");
+                                    ui.color_edit_button_srgba(&mut app.theme.sampler_pad_window.fx_slider_grab_color);
                                     ui.end_row();
                                 });
                             });

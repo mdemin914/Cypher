@@ -1,4 +1,3 @@
-// src/theme.rs
 use crate::looper::NUM_LOOPERS;
 use egui::{epaint, Color32, CornerRadius, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
@@ -110,6 +109,11 @@ fn default_sampler_pad_outline_row_1_color() -> Color32 { Color32::from_rgba_unm
 fn default_sampler_pad_outline_row_2_color() -> Color32 { Color32::from_rgba_unmultiplied(0, 172, 0, 255) }
 fn default_sampler_pad_outline_row_3_color() -> Color32 { Color32::from_rgba_unmultiplied(0, 126, 173, 255) }
 fn default_sampler_pad_outline_row_4_color() -> Color32 { Color32::from_rgba_unmultiplied(188, 0, 188, 255) }
+fn default_sampler_pad_fx_panel_bg() -> Color32 { Color32::from_rgba_unmultiplied(15, 12, 36, 255) }
+fn default_sampler_pad_fx_label_color() -> Color32 { Color32::from_rgba_unmultiplied(200, 200, 200, 255) }
+fn default_sampler_pad_fx_slider_track_color() -> Color32 { Color32::from_rgba_unmultiplied(30, 25, 60, 255) }
+fn default_sampler_pad_fx_slider_grab_color() -> Color32 { Color32::from_rgba_unmultiplied(190, 80, 255, 255) }
+
 
 // Synth Editor
 fn default_synth_editor_bg() -> Color32 { Color32::from_rgba_unmultiplied(6, 5, 23, 255) }
@@ -299,8 +303,12 @@ pub struct SamplerPadWindowTheme {
     #[serde(default = "default_sampler_pad_outline_row_2_color")] pub pad_outline_row_2_color: Color32,
     #[serde(default = "default_sampler_pad_outline_row_3_color")] pub pad_outline_row_3_color: Color32,
     #[serde(default = "default_sampler_pad_outline_row_4_color")] pub pad_outline_row_4_color: Color32,
+    #[serde(default = "default_sampler_pad_fx_panel_bg")] pub fx_panel_bg: Color32,
+    #[serde(default = "default_sampler_pad_fx_label_color")] pub fx_label_color: Color32,
+    #[serde(default = "default_sampler_pad_fx_slider_track_color")] pub fx_slider_track_color: Color32,
+    #[serde(default = "default_sampler_pad_fx_slider_grab_color")] pub fx_slider_grab_color: Color32,
 }
-impl Default for SamplerPadWindowTheme { fn default() -> Self { Self { background: default_sampler_pad_window_bg(), pad_bg_color: default_sampler_pad_bg(), pad_playing_outline_color: default_sampler_pad_playing_outline_color(), pad_trash_hover_outline_color: default_sampler_pad_trash_hover_outline_color(), trash_mode_active_bg: default_sampler_pad_trash_mode_active_bg(), kit_button_bg: default_sampler_pad_kit_button_bg(), pad_outline_row_1_color: default_sampler_pad_outline_row_1_color(), pad_outline_row_2_color: default_sampler_pad_outline_row_2_color(), pad_outline_row_3_color: default_sampler_pad_outline_row_3_color(), pad_outline_row_4_color: default_sampler_pad_outline_row_4_color() } } }
+impl Default for SamplerPadWindowTheme { fn default() -> Self { Self { background: default_sampler_pad_window_bg(), pad_bg_color: default_sampler_pad_bg(), pad_playing_outline_color: default_sampler_pad_playing_outline_color(), pad_trash_hover_outline_color: default_sampler_pad_trash_hover_outline_color(), trash_mode_active_bg: default_sampler_pad_trash_mode_active_bg(), kit_button_bg: default_sampler_pad_kit_button_bg(), pad_outline_row_1_color: default_sampler_pad_outline_row_1_color(), pad_outline_row_2_color: default_sampler_pad_outline_row_2_color(), pad_outline_row_3_color: default_sampler_pad_outline_row_3_color(), pad_outline_row_4_color: default_sampler_pad_outline_row_4_color(), fx_panel_bg: default_sampler_pad_fx_panel_bg(), fx_label_color: default_sampler_pad_fx_label_color(), fx_slider_track_color: default_sampler_pad_fx_slider_track_color(), fx_slider_grab_color: default_sampler_pad_fx_slider_grab_color(), } } }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
@@ -434,7 +442,7 @@ pub struct Theme {
     pub piano_keys: PianoKeyTheme,
     pub slicer_window: SlicerWindowTheme,
     pub midi_mapping_window: MidiMappingTheme,
-    pub about_window: AboutWindowTheme, // <-- ADDED
+    pub about_window: AboutWindowTheme,
 }
 
 impl Default for Theme {
@@ -456,7 +464,7 @@ impl Default for Theme {
             piano_keys: Default::default(),
             slicer_window: Default::default(),
             midi_mapping_window: Default::default(),
-            about_window: Default::default(), // <-- ADDED
+            about_window: Default::default(),
         }
     }
 }
@@ -470,7 +478,7 @@ impl From<&Theme> for Visuals {
         };
 
         visuals.override_text_color = Some(theme.global_text_color);
-        visuals.hyperlink_color = theme.about_window.link_color; // <-- ADDED
+        visuals.hyperlink_color = theme.about_window.link_color;
         visuals.window_fill = default_black();
         visuals.panel_fill = theme.mixer.panel_background;
         visuals.window_stroke = Stroke::new(1.0, theme.window_stroke_color);

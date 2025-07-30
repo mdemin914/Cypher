@@ -1,4 +1,3 @@
-// src/app.rs
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine, MidiMessage};
@@ -7,7 +6,7 @@ use crate::looper::{SharedLooperState, NUM_LOOPERS};
 use crate::midi;
 use crate::mixer::{MixerState, MixerTrackState};
 use crate::preset::{SynthEnginePreset, SynthPreset};
-use crate::sampler::SamplerKit;
+use crate::sampler::{SamplerKit, SamplerPadFxSettings};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
 use crate::settings::{self, AppSettings, ControllableParameter, MidiControlId};
 use crate::slicer;
@@ -26,7 +25,7 @@ use cpal::{Device, HostId, Stream};
 use egui::Color32;
 use midir::{MidiInputConnection, MidiInputPort};
 use rfd::FileDialog;
-use ringbuf::HeapRb;
+use ringbuf::{HeapConsumer, HeapRb};
 use rodio::source::Source;
 use rodio::Decoder;
 use rubato::{
@@ -178,9 +177,10 @@ pub struct CypherApp {
     _output_stream: Option<Stream>,
     _midi_connection: Option<MidiInputConnection<()>>,
     _command_thread_handle: Option<JoinHandle<()>>,
-    _midi_timer_handle: Option<JoinHandle<()>>, // <-- ADDED
+    _midi_timer_handle: Option<JoinHandle<()>>,
     command_sender: Option<mpsc::Sender<AudioCommand>>,
-    midi_timer_should_exit: Arc<AtomicBool>, // <-- ADDED
+    midi_timer_should_exit: Arc<AtomicBool>,
+    pub pad_event_consumer: HeapConsumer<usize>,
 
     // --- UI / Shared State ---
     pub looper_states: Vec<SharedLooperState>,
@@ -192,6 +192,7 @@ pub struct CypherApp {
     pub audio_input_is_monitored: Arc<AtomicBool>,
     pub sampler_is_active: Arc<AtomicBool>,
     pub sampler_pad_info: [Option<SampleRef>; 16],
+    pub sampler_pad_fx_settings: [SamplerPadFxSettings; 16],
     pub playing_pads: Arc<AtomicU16>,
     pub cpu_load: Arc<AtomicU32>,
     pub xrun_count: Arc<AtomicUsize>,
@@ -361,6 +362,8 @@ impl CypherApp {
             std::array::from_fn(|_| AtomicU32::new(0))
         }));
 
+        let (_producer, consumer) = HeapRb::<usize>::new(32).split();
+
         let app = Self {
             options_window_open: false,
             sample_pad_window_open: false,
@@ -383,9 +386,10 @@ impl CypherApp {
             _output_stream: None,
             _midi_connection: None,
             _command_thread_handle: None,
-            _midi_timer_handle: None, // <-- INITIALIZED
+            _midi_timer_handle: None,
             command_sender: None,
-            midi_timer_should_exit: Arc::new(AtomicBool::new(false)), // <-- INITIALIZED
+            midi_timer_should_exit: Arc::new(AtomicBool::new(false)),
+            pad_event_consumer: consumer,
             looper_states: Vec::new(),
             transport_playhead: Arc::new(AtomicUsize::new(0)),
             transport_len_samples: Arc::new(AtomicUsize::new(0)),
@@ -395,6 +399,7 @@ impl CypherApp {
             audio_input_is_monitored: Arc::new(AtomicBool::new(false)),
             sampler_is_active: Arc::new(AtomicBool::new(false)),
             sampler_pad_info: Default::default(),
+            sampler_pad_fx_settings: Default::default(),
             playing_pads: Arc::new(AtomicU16::new(0)),
             cpu_load,
             xrun_count,
@@ -640,7 +645,7 @@ impl CypherApp {
             audio_data: Arc::new(vec![]),
         });
     }
-    
+
     fn resolve_path(&self, path_to_resolve: &Path) -> Option<PathBuf> {
         if path_to_resolve.exists() {
             return Some(path_to_resolve.to_path_buf());
@@ -844,17 +849,13 @@ impl CypherApp {
     }
 
     pub fn stop_audio(&mut self) {
-        // --- MODIFIED ---
-        // Signal the timer thread to exit and wait for it.
         self.midi_timer_should_exit.store(true, Ordering::Relaxed);
         if let Some(handle) = self._midi_timer_handle.take() {
             if let Err(e) = handle.join() {
                 eprintln!("Error joining MIDI timer thread: {:?}", e);
             }
         }
-        // Reset the flag for the next time audio starts.
         self.midi_timer_should_exit.store(false, Ordering::Relaxed);
-        // --- END MODIFIED ---
 
         self._midi_connection.take();
         self.command_sender.take();
@@ -892,6 +893,11 @@ impl CypherApp {
         let audio_rb = HeapRb::<f32>::new((sample_rate.unwrap_or(48000) * 4) as usize);
         let (audio_producer, audio_consumer) = audio_rb.split();
 
+        let pad_event_rb = HeapRb::<usize>::new(32);
+        let (pad_event_producer, pad_event_consumer) = pad_event_rb.split();
+        self.pad_event_consumer = pad_event_consumer;
+
+
         self._command_thread_handle = Some(thread::spawn(move || {
             while let Ok(command) = mpsc_receiver.recv() {
                 if ringbuf_producer.push(command).is_err() {
@@ -905,6 +911,7 @@ impl CypherApp {
         let (mut engine, looper_states) = AudioEngine::new(
             ringbuf_consumer,
             audio_consumer,
+            pad_event_producer,
             sample_rate.unwrap_or(48000) as f32,
             self.selected_midi_channel.clone(),
             self.playing_pads.clone(),
@@ -1071,24 +1078,17 @@ impl CypherApp {
     }
 
     pub fn reconnect_midi(&mut self) -> Result<()> {
-        // --- MODIFIED ---
-        // Signal the old timer thread to exit and wait for it.
         self.midi_timer_should_exit.store(true, Ordering::Relaxed);
         if let Some(handle) = self._midi_timer_handle.take() {
-            // We can ignore the result here on reconnect, as the main shutdown
-            // is handled in stop_audio and on_exit.
             let _ = handle.join();
         }
-        // Reset the flag for the new timer thread.
         self.midi_timer_should_exit.store(false, Ordering::Relaxed);
-        // --- END MODIFIED ---
 
         self._midi_connection = None;
         if let (Some(index), Some(sender)) =
             (self.selected_midi_port_index, self.command_sender.as_ref())
         {
             if let Some(port_info) = self.midi_ports.get(index) {
-                // --- MODIFIED ---
                 let (conn, handle) = midi::connect_midi(
                     sender.clone(),
                     self.live_midi_notes.clone(),
@@ -1099,10 +1099,10 @@ impl CypherApp {
                     self.midi_cc_values.clone(),
                     self.midi_mod_matrix_learn_target.clone(),
                     self.last_learned_mod_source.clone(),
-                    self.midi_timer_should_exit.clone(), // Pass the signal
+                    self.midi_timer_should_exit.clone(),
                 )?;
                 self._midi_connection = Some(conn);
-                self._midi_timer_handle = Some(handle); // Store the new handle
+                self._midi_timer_handle = Some(handle);
             }
         }
         Ok(())
@@ -1203,6 +1203,13 @@ impl CypherApp {
                     audio_data: Arc::new(audio_data),
                 });
                 self.sampler_pad_info[pad_index] = Some(sample_ref);
+                // When loading a new sample, reset its FX to default
+                let default_fx = SamplerPadFxSettings::default();
+                self.sampler_pad_fx_settings[pad_index] = default_fx;
+                self.send_command(AudioCommand::SetSamplerPadFx {
+                    pad_index,
+                    settings: default_fx,
+                });
             }
             Err(e) => {
                 eprintln!(
@@ -1224,11 +1231,11 @@ impl CypherApp {
             path.clone() // Fallback
         };
 
-
         if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             if let Ok(kit) = serde_json::from_str::<SamplerKit>(&json_string) {
-                for (i, pad_path) in kit.pads.into_iter().enumerate() {
-                    if let Some(p) = pad_path {
+                for (i, pad_settings) in kit.pads.into_iter().enumerate() {
+                    // Load sample if path exists
+                    if let Some(p) = pad_settings.path {
                         if let Some(resolved_path) = self.resolve_path(&p) {
                             if let Some(sample) = SampleRef::new(resolved_path.clone()) {
                                 self.load_sample_for_pad(i, sample);
@@ -1242,19 +1249,23 @@ impl CypherApp {
                         self.sampler_pad_info[i] = None;
                         self.send_command(AudioCommand::ClearSample { pad_index: i });
                     }
+
+                    // Apply FX settings
+                    self.sampler_pad_fx_settings[i] = pad_settings.fx;
+                    self.send_command(AudioCommand::SetSamplerPadFx {
+                        pad_index: i,
+                        settings: pad_settings.fx,
+                    });
                 }
 
                 // Convert the kit path to be relative for portability before saving.
                 if let Some(config_dir) = settings::get_config_dir() {
                     if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
-                        // Success: store the portable, relative path.
                         self.settings.last_sampler_kit = Some(relative_path.to_path_buf());
                     } else {
-                        // Fallback: the kit is outside the portable folder, store its absolute path.
                         self.settings.last_sampler_kit = Some(absolute_path);
                     }
                 } else {
-                    // Fallback: can't get config dir, store absolute path.
                     self.settings.last_sampler_kit = Some(absolute_path);
                 }
             }
@@ -1645,8 +1656,6 @@ impl CypherApp {
 
 
     pub fn load_theme_from_path(&mut self, path: &Path) {
-        // --- Step 1: Resolve the path if it's relative ---
-        // The `path` coming from settings might be relative. We need its absolute form to read it.
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
         } else if let Some(config_dir) = settings::get_config_dir() {
@@ -1655,23 +1664,17 @@ impl CypherApp {
             path.to_path_buf() // Fallback
         };
 
-        // --- Step 2: Try to read the theme file from the resolved absolute path ---
         if let Ok(json_string) = fs::read_to_string(&absolute_path) {
             match serde_json::from_str::<Theme>(&json_string) {
                 Ok(loaded_theme) => {
-                    // --- Step 3: THE FIX ---
-                    // Now, store a relative path back into settings if possible.
                     self.theme = loaded_theme;
                     if let Some(config_dir) = settings::get_config_dir() {
                         if let Ok(relative_path) = absolute_path.strip_prefix(&config_dir) {
-                            // Store the nice, portable, relative path
                             self.settings.last_theme = Some(relative_path.to_path_buf());
                         } else {
-                            // The theme is outside our portable folder, store absolute path as a fallback
                             self.settings.last_theme = Some(absolute_path);
                         }
                     } else {
-                        // Can't get config dir, store absolute path
                         self.settings.last_theme = Some(absolute_path);
                     }
                 }
@@ -1701,7 +1704,6 @@ impl CypherApp {
         };
 
         if needs_change {
-            // 1. Update the UI-side state holder to a new default engine of the target type.
             if is_wavetable {
                 self.engine_states[engine_index] = EngineState::new_wavetable();
                 self.active_synth_section[engine_index] = SynthUISection::Wavetable;
@@ -1710,10 +1712,8 @@ impl CypherApp {
                 self.active_synth_section[engine_index] = SynthUISection::Sampler;
             }
 
-            // 2. Get the parameters for the *newly created* default state.
             let engine_params_with_vol_peak = self.get_engine_params(engine_index);
 
-            // 3. Send a command to the audio thread to swap its engine instance.
             self.send_command(AudioCommand::ChangeEngineType {
                 engine_index,
                 volume: engine_params_with_vol_peak.0.clone(),
@@ -1721,7 +1721,6 @@ impl CypherApp {
                 params: engine_params_with_vol_peak.2.clone(),
             });
 
-            // 4. Send commands to initialize the new engine with default settings.
             if is_wavetable {
                 self.initialize_wavetable_preset(engine_index);
             } else {
@@ -1734,21 +1733,15 @@ impl CypherApp {
         self.settings.last_synth_preset = None;
         self.current_session_path = None; // A new preset means it's an unsaved session
 
-        // We no longer stop/start audio. Instead, we send commands to reset the synth engines.
         for engine_index in 0..2 {
-            // 1. Reset the UI-side state holder to a new default wavetable engine.
             self.engine_states[engine_index] = EngineState::new_wavetable();
             self.active_synth_section[engine_index] = SynthUISection::Wavetable;
             if let EngineState::Wavetable(state) = &mut self.engine_states[engine_index] {
                 state.force_redraw_generation += 1;
             }
 
-            // 2. Get the parameters for the *newly created* default state.
-            // This is crucial for the ChangeEngineType command.
             let engine_params_with_vol_peak = self.get_engine_params(engine_index);
 
-            // 3. Send a command to the audio thread to swap its engine instance with a new default one.
-            // This handles both cases (was sampler or was wavetable) by simply replacing it.
             self.send_command(AudioCommand::ChangeEngineType {
                 engine_index,
                 volume: engine_params_with_vol_peak.0.clone(),
@@ -1756,8 +1749,6 @@ impl CypherApp {
                 params: engine_params_with_vol_peak.2.clone(),
             });
 
-            // 4. Send commands to initialize the new engine with default settings.
-            // This ensures all parameters (like default wavetables) are explicitly loaded on the audio thread.
             let default_adsr = crate::synth::AdsrSettings::default();
             self.send_command(AudioCommand::SetAmpAdsr(engine_index, default_adsr));
             self.send_command(AudioCommand::SetFilterAdsr(engine_index, default_adsr));
@@ -1765,16 +1756,13 @@ impl CypherApp {
             self.send_command(AudioCommand::SetSynthMode(engine_index, true));
         }
 
-        // Make the new preset immediately playable
         self.send_command(AudioCommand::ActivateSynth);
         self.send_command(AudioCommand::DeactivateSampler);
     }
 
     pub fn initialize_wavetable_preset(&mut self, engine_index: usize) {
-        // Get immutable data before the mutable borrow
         let active_sr = self.active_sample_rate;
 
-        // Pass 1: All mutable updates to state
         if let EngineState::Wavetable(engine_state) = &mut self.engine_states[engine_index] {
             let default_adsr = crate::synth::AdsrSettings::default();
             engine_state.amp_adsr = default_adsr;
@@ -1801,12 +1789,10 @@ impl CypherApp {
             }
         }
 
-        // Pass 2: Immutable calls to generate and send wavetables
         for k in 0..4 {
             self.generate_and_send_wavetable(engine_index, k, 0.0);
         }
 
-        // Pass 3: Send other commands
         let default_adsr = crate::synth::AdsrSettings::default();
         self.send_command(AudioCommand::SetAmpAdsr(engine_index, default_adsr));
         self.send_command(AudioCommand::SetFilterAdsr(engine_index, default_adsr));
@@ -1815,11 +1801,9 @@ impl CypherApp {
     }
 
     pub fn initialize_sampler_preset(&mut self, engine_index: usize) {
-        // A vector to collect commands, so we don't borrow `self` mutably and immutably at once.
         let mut commands_to_send = Vec::new();
 
         if let EngineState::Sampler(engine_state) = &mut self.engine_states[engine_index] {
-            // Reset all UI state first
             let default_adsr = crate::synth::AdsrSettings::default();
             engine_state.amp_adsr = default_adsr;
             engine_state.filter_adsr = default_adsr;
@@ -1832,9 +1816,8 @@ impl CypherApp {
             engine_state.volume.store(1_000_000, Ordering::Relaxed);
             engine_state.global_fine_tune_cents = 0.0;
             engine_state.fade_out = 0.01;
-            engine_state.root_notes = std::array::from_fn(|i| (24 + i * 12) as u8); // C2, C3...
+            engine_state.root_notes = std::array::from_fn(|i| (24 + i * 12) as u8);
 
-            // Collect commands for global settings first
             commands_to_send.push(AudioCommand::SetAmpAdsr(engine_index, default_adsr));
             commands_to_send.push(AudioCommand::SetFilterAdsr(engine_index, default_adsr));
             commands_to_send.push(AudioCommand::SetSamplerSettings {
@@ -1845,21 +1828,18 @@ impl CypherApp {
             });
             commands_to_send.push(AudioCommand::SetSynthMode(engine_index, true));
 
-            // Clear all sample slots on UI and collect commands for the audio thread
             for i in 0..NUM_SAMPLE_SLOTS {
                 engine_state.sample_names[i] = "Empty".to_string();
                 engine_state.sample_paths[i] = None;
                 engine_state.sample_data_for_ui[i].write().unwrap().clear();
-                // Command to clear sample on audio thread
                 commands_to_send.push(AudioCommand::LoadSampleForSamplerSlot {
                     engine_index,
                     slot_index: i,
                     audio_data: Arc::new(vec![]),
                 });
             }
-        } // The mutable borrow of `engine_state` (and thus `self`) ends here.
+        }
 
-        // Now it's safe to call `send_command` on `self`.
         for cmd in commands_to_send {
             self.send_command(cmd);
         }
@@ -1946,11 +1926,8 @@ impl CypherApp {
 
         match self.theory_mode {
             TheoryMode::Scales => {
-                // In scale mode, we only update the display if exactly one note is held.
-                // Otherwise, the previously displayed scale remains ("sticky").
                 if notes.len() == 1 {
                     if let Some(&root_note) = notes.iter().next() {
-                        // Clear the display ONLY when we are about to draw a new valid scale.
                         self.displayed_theory_notes.clear();
                         let scale_notes = theory::get_scale_notes(root_note, self.selected_scale);
                         for (i,&note) in scale_notes.iter().enumerate() {
@@ -1960,44 +1937,29 @@ impl CypherApp {
                 }
             }
             TheoryMode::Chords => {
-                // If the held notes are the same as the ones that triggered the last suggestion, do nothing.
                 if notes == self.last_recognized_chord_notes {
                     return;
                 }
-
-                // If the current notes are a subset of the last chord (i.e., user is releasing keys),
-                // don't update the display. This makes it "sticky".
-                // We check !notes.is_empty() to ensure the latch still clears on the final key release.
                 if !notes.is_empty() && notes.is_subset(&self.last_recognized_chord_notes) {
                     return;
                 }
-
-                // If no keys are pressed, clear the last recognized chord to allow re-triggering.
-                // Do not clear the display, making it sticky.
                 if notes.is_empty() {
                     self.last_recognized_chord_notes.clear();
                     return;
                 }
-
                 if notes.len() >= 2 {
                     if let Some(chord) = theory::recognize_chord(&notes) {
-                        // A new, valid chord has been recognized. Update the display.
-                        self.last_recognized_chord_notes = notes.clone(); // Latch the new chord
-                        self.displayed_theory_notes.clear(); // Clear old suggestions
-
+                        self.last_recognized_chord_notes = notes.clone();
+                        self.displayed_theory_notes.clear();
                         let suggestions =
                             theory::get_chord_suggestions(&chord, &self.selected_chord_style);
-
                         match self.chord_display_mode {
                             ChordDisplayMode::Spread => {
-                                // Use fixed, non-adjacent octaves 1, 3, 5, and 7.
                                 let display_octaves = [1, 3, 5, 7];
-
                                 for (i, (quality, root)) in suggestions.iter().enumerate() {
                                     if let Some(&octave_to_use) = display_octaves.get(i) {
                                         let chord_notes =
                                             theory::build_chord_notes(*root, *quality, octave_to_use);
-
                                         for note in chord_notes {
                                             if note <= 127 {
                                                 self.displayed_theory_notes.push((note, i));
@@ -2007,7 +1969,6 @@ impl CypherApp {
                                 }
                             }
                             ChordDisplayMode::Stacked => {
-                                // For stacked mode, we place all chords in a central octave (e.g. 4)
                                 const STACK_OCTAVE: u8 = 4;
                                 for (i, (quality, root)) in suggestions.iter().enumerate() {
                                     let chord_notes =
@@ -2021,7 +1982,6 @@ impl CypherApp {
                             }
                         }
                     }
-                    // If chord is not recognized (e.g. just two notes), do nothing. The display remains sticky.
                 }
             }
         }

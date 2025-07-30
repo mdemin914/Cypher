@@ -267,6 +267,7 @@ pub enum AdsrState {
     Release,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Adsr {
     pub settings: AdsrSettings,
     pub state: AdsrState,
