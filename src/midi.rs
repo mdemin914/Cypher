@@ -1,4 +1,3 @@
-// src/midi.rs
 use crate::audio_engine::{AudioCommand, MidiMessage};
 use crate::settings::{ControllableParameter, MidiControlId};
 use anyhow::Result;
@@ -182,7 +181,7 @@ pub fn connect_midi(
                                                 ControllableParameter::InputToggleMonitor => Some(AudioCommand::ToggleAudioInputMonitoring),
                                                 ControllableParameter::TransportTogglePlay => Some(AudioCommand::ToggleTransport),
                                                 ControllableParameter::TransportToggleMuteAll => Some(AudioCommand::ToggleMuteAll),
-                                                ControllableParameter::TransportClearAll => Some(AudioCommand::ClearAll),
+                                                ControllableParameter::TransportClearAll => Some(AudioCommand::ClearAllAndPlay), // <-- THIS IS THE FIX
                                                 ControllableParameter::TransportToggleRecord => Some(AudioCommand::ToggleRecord),
                                                 _ => None,
                                             };

@@ -146,18 +146,19 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             let theme = app.theme.clone();
 
             ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                const CARD_HEIGHT: f32 = 65.0;
+                const CARD_WIDTH: f32 = 100.0;
                 const SPACING: f32 = 20.0;
-                let cell_height = CARD_HEIGHT + SPACING;
+                const SCROLL_RESERVATION_WIDTH: f32 = CARD_WIDTH * 2.0 + SPACING;
 
                 let total_items = current_folder.subfolders.len() + current_folder.assets.len();
                 if total_items == 0 {
                     return;
                 }
 
-                let available_height = ui.available_height();
-                let max_rows_possible = max(1, (available_height / cell_height).floor() as usize);
-                let num_cols = (total_items as f32 / max_rows_possible as f32).ceil() as usize;
+                // Calculate number of columns based on available width, reserving space on the right
+                let available_width = ui.available_width();
+                let effective_width = (available_width - SCROLL_RESERVATION_WIDTH).max(CARD_WIDTH);
+                let num_cols = max(1, ((effective_width + SPACING) / (CARD_WIDTH + SPACING)).floor() as usize);
                 let mut item_index = 0;
 
                 egui::Grid::new("responsive_asset_grid")
