@@ -25,16 +25,9 @@ This project is a testament to what is now possible. A musician with a clear vis
 
 ## Getting Started
 
-### Pre-Built Binaries
+The easiest way to get Cypher is to download the latest version from the official Releases page. This page contains the latest binaries and important platform-specific information.
 
-The easiest way to try Cypher is by downloading a pre-built binary for your operating system. You can find the latest versions in the shared folder below:
-
-**[Download the latest pre-builds from Mega.nz](https://mega.nz/folder/H7JhUR6Z#7JN2BNm_6-GsgHighvP4Dg)**
-
-I currently provide builds for the following platforms:
-
-*   **Windows (x86_64):** A standard pre-built version for Windows.
-*   **Linux (aarch64 / ARM):** A dedicated version for 64-bit ARM devices. Please note, this build is created and tested specifically on an **Orange Pi 5 Plus (16GB)** running the Ubuntu LTS image provided by **joshua-riek**.
+**[Download the Latest Release from GitHub](https://github.com/WormJuiceDev/Cypher/releases/latest)**
 
 ## Core Features
 
