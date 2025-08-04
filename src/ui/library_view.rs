@@ -223,7 +223,7 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             if let Some(path) = kit_to_load {
                 app.load_kit(&path);
                 app.send_command(AudioCommand::ActivateSampler);
-                app.send_command(AudioCommand::DeactivateSampler);
+                app.send_command(AudioCommand::DeactivateSynth);
             }
             if let Some(path) = session_to_load {
                 app.load_session(&path);
