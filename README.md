@@ -8,6 +8,21 @@ Built with performance and stability in mind, Cypher leverages the power of Rust
 
 <img width="3432" height="1386" alt="image" src="https://github.com/user-attachments/assets/47020498-bbb3-4255-b345-d1d1c19afea0" />
 
+### A Note on the Development Process: Human Direction, AI Execution
+
+Cypher is unique not just in its features, but in how it was built. It represents a new model of collaboration between a human director and an AI coder.
+
+**The Twist:** I am a musician and a creative director, not a professional Rust developer. I acted as the **Director and Lead** for this entire project. All the Rust code was written by **Google's Gemini**, guided by my specific vision and a continuous, detailed dialogue.
+
+My role was to:
+*   Define the complete feature set and user experience.
+*   Direct the overall software architecture.
+*   Provide detailed prompts and specifications for every component.
+*   Perform constant testing, debugging, and quality control.
+*   Guide the AI through complex refactoring to improve performance and stability.
+
+This project is a testament to what is now possible. A musician with a clear vision can orchestrate the creation of a complex, professional-grade tool without needing to be a master coder. It's an experiment in a new form of creation, and I'm open-sourcing it in the hope that it inspires others to direct the creation of their own dream tools.
+
 ## Getting Started
 
 ### Pre-Built Binaries
@@ -42,7 +57,6 @@ Cypher combines several powerful tools into a single, cohesive application:
 
 *   **Creative Tools:**
     *   **16-Pad Sampler:** A classic one-shot sampler perfect for drums and effects. Load samples via drag-and-drop and build custom kits.
-
         <img width="494" height="557" alt="image" src="https://github.com/user-attachments/assets/ca5d3b0b-0132-403e-9635-df8f644f9b9b" />
     *   **Music Theory Assistant (88Keys):** An integrated piano keyboard that can visualize 14 different musical scales or provide harmonically-aware chord suggestions based on what you play, using customizable "Chord Styles".
         <img width="3434" height="204" alt="image" src="https://github.com/user-attachments/assets/2953ac9d-562d-4a6c-b064-442d4f6f565b" />
@@ -51,13 +65,12 @@ Cypher combines several powerful tools into a single, cohesive application:
 
 *   **Extensible and Customizable:**
     *   **Fully Themeable UI:** Every color in the application is defined in a simple JSON file. A built-in theme editor allows you to create, save, and share your own visual styles.
-    *   
         <img width="418" height="437" alt="image" src="https://github.com/user-attachments/assets/b3025364-1abf-4b5f-8473-472dbca1e970" />
     *   **Asset Library:** Cypher automatically scans a dedicated directory for your Samples, Synth Presets, Sampler Kits, and Themes, organizing them in a convenient browser.
         <img width="1001" height="208" alt="image" src="https://github.com/user-attachments/assets/b59f2914-2a55-4f07-a5f7-e17cad00195c" />
-    *   **Options Menu:** Cypher has its own low latency audio implementation, including jack for linux. 
+    *   **Options Menu:** Cypher has its own low latency audio implementation, including JACK for Linux. 
         <img width="555" height="471" alt="image" src="https://github.com/user-attachments/assets/7b545dc0-9d0b-43e2-ba7a-4f0cc69953a0" />
-    *   **Midi Mapping:** Cypher has midi mapping making controlability even easyer using a midi controller or midi keyboard.
+    *   **MIDI Mapping:** Cypher has extensive MIDI mapping, making it easy to control using a MIDI controller or keyboard.
         <img width="1095" height="952" alt="image" src="https://github.com/user-attachments/assets/678ab021-7780-49c8-864a-cf1d50b33abb" />
 
 
@@ -75,15 +88,15 @@ This project is a showcase of modern, high-performance audio development in Rust
 
 Contributions are welcome and highly appreciated! Whether you're a musician, a developer, or a designer, there are many ways to help out:
 
-*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance, feel free to fork and build uppon the core of Cypher.
+*   **Code:** Submitting bug fixes, implementing new features, or refactoring for performance. Feel free to fork and build upon the core of Cypher.
 *   **Testing:** Finding and reporting bugs and providing feedback on usability.
 *   **Design:** Creating new themes or designing synth presets and sampler kits to be bundled with the application.
 *   **Documentation:** Improving this README, adding code comments, or writing user guides.
 
 Please feel free to open an issue to discuss any ideas or report problems.
 
-Discord:
-https://discord.gg/Mc2eKqq3hy
+**Community Discord:**
+[https://discord.gg/Mc2eKqq3hy](https://discord.gg/Mc2eKqq3hy)
 
 ## License
 
