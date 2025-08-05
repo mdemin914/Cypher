@@ -1,0 +1,74 @@
+# The name of your streamlined, primary release workflow
+name: Create Release
+
+# This workflow runs ONLY when you push a new tag that starts with 'v'
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Grant write permissions for creating releases
+permissions:
+  contents: write
+
+jobs:
+  # JOB 1: BUILD FOR WINDOWS
+  build_windows:
+    name: Build Windows executable (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --verbose
+      - name: Download and Unpack Assets
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/WormJuiceDev/Cypher/releases/download/v0.1.1-alpha/CypherDefaultContent.zip" -OutFile "content.zip"
+          New-Item -Path "staging" -ItemType Directory
+          Expand-Archive -Path "content.zip" -DestinationPath "staging"
+          Copy-Item -Path "target/release/cypher.exe" -Destination "staging"
+        shell: pwsh
+      - name: Package Windows Release
+        run: |
+          $VERSION = "${{ github.ref_name }}"
+          Compress-Archive -Path "./staging/*" -DestinationPath "Cypher-${VERSION}-Windows-x86_64.zip"
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: Cypher-${{ github.ref_name }}-Windows-x86_64.zip
+
+  # JOB 2: BUILD FOR STANDARD LINUX (x86_64)
+  build_linux_x86:
+    name: Build Linux executable (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip libasound2-dev libjack-jackd2-dev
+      - run: cargo build --release --verbose
+      - name: Download and Unpack Assets
+        run: |
+          curl -L -o content.zip "https://github.com/WormJuiceDev/Cypher/releases/download/v0.1.1-alpha/CypherDefaultContent.zip"
+          mkdir -p staging
+          unzip content.zip -d staging
+          cp target/release/cypher staging/
+      - name: Package Linux x86_64 Release
+        run: |
+          VERSION=${{ github.ref_name }}
+          (cd staging && zip -r "../Cypher-${VERSION}-Linux-x86_64.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86-build
+          path: Cypher-${{ github.ref_name }}-Linux-x86_64.zip
+
+  # JOB 3: PUBLISH THE RELEASE
+  publish:
+    name: Publish GitHub Release
+    # This job now only waits for the two fast, reliable builds.
+    needs: [build_windows, build_linux_x86]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "*/*.zip"
