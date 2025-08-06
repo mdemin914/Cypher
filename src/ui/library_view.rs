@@ -6,15 +6,14 @@ use crate::settings;
 use crate::synth::AdsrSettings;
 use crate::ui;
 use egui::{
-    epaint, vec2, Align, Align2, Button, Color32, DragAndDrop, Frame, Grid, Id, Layout, Margin,
-    Response, RichText, Rounding, ScrollArea, Sense, Slider, Stroke, Ui, Window,
+    epaint, vec2, Align2, Button, CornerRadius, DragAndDrop, Frame, Id,
+     Margin, Response, RichText, ScrollArea, Sense, Slider, Stroke, Ui, Window,
 };
 use rfd::FileDialog;
 use std::cmp::max;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // A small distance threshold. If the user presses and releases within this distance,
@@ -47,7 +46,7 @@ fn slider_to_time(value: f32, max_time: f32) -> f32 {
 
 
 pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none()
+    let frame = Frame::new()
         .fill(app.theme.library.panel_background)
         .inner_margin(Margin { left: 0, right: 0, top: 8, bottom: 8 });
 
@@ -243,7 +242,7 @@ fn draw_folder_card(ui: &mut Ui, name: &str, theme: &crate::theme::Theme) -> Res
         } else {
             theme.library.card_bg
         };
-        let frame = Frame::group(ui.style()).rounding(visuals.rounding()).fill(fill_color).stroke(visuals.bg_stroke);
+        let frame = Frame::group(ui.style()).fill(fill_color).stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 
         let icon_galley = ui.painter().layout_no_wrap("📁".to_string(), egui::FontId::proportional(32.0), theme.library.text_color);
@@ -278,7 +277,7 @@ fn draw_asset_card(
         } else {
             theme.library.card_bg
         };
-        let frame = Frame::group(ui.style()).rounding(visuals.rounding()).fill(fill_color).stroke(visuals.bg_stroke);
+        let frame = Frame::group(ui.style()).fill(fill_color).stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 
         let icon_galley = ui.painter().layout_no_wrap(icon.to_string(), egui::FontId::proportional(32.0), theme.library.text_color);
@@ -480,7 +479,7 @@ fn draw_pad(
     };
 
     let stroke_width = if is_active_editor { 4.0 } else { 2.0 };
-    ui.painter().rect(rect, Rounding::from(5.0), pad_color, Stroke::new(stroke_width, outline_color), epaint::StrokeKind::Inside);
+    ui.painter().rect(rect, CornerRadius::from(5.0), pad_color, Stroke::new(stroke_width, outline_color), epaint::StrokeKind::Inside);
 
     if let Some(sample) = &app.sampler_pad_info[pad_index] {
         let text_color = ui.style().visuals.text_color();
@@ -495,7 +494,7 @@ fn draw_pad_fx_editor(app: &mut CypherApp, ui: &mut Ui, pad_index: usize) {
     let mut fx_changed = false;
     let theme = &app.theme.sampler_pad_window;
 
-    Frame::none().fill(theme.fx_panel_bg).show(ui, |ui| {
+    Frame::new().fill(theme.fx_panel_bg).show(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.heading(format!("Editing Pad {}", pad_index + 1));
         });

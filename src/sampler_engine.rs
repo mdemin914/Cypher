@@ -60,7 +60,6 @@ pub struct SamplerEngineState {
     pub env2_value_atomic: Arc<AtomicU32>,
     pub pitch_mod_atomic: Arc<AtomicU32>,
     pub amp_mod_atomic: Arc<AtomicU32>,
-    pub cutoff_mod_atomic: Arc<AtomicU32>,
     pub saturation_mod_atomic: Arc<AtomicU32>,
     pub final_cutoff_atomic: Arc<AtomicU32>,
     pub last_triggered_slot_index: Arc<AtomicUsize>, // <-- ADDED THIS
@@ -97,7 +96,6 @@ impl SamplerEngineState {
             env2_value_atomic: Arc::new(AtomicU32::new(0)),
             pitch_mod_atomic: Arc::new(AtomicU32::new(500_000)),
             amp_mod_atomic: Arc::new(AtomicU32::new(500_000)),
-            cutoff_mod_atomic: Arc::new(AtomicU32::new(500_000)),
             saturation_mod_atomic: Arc::new(AtomicU32::new(0)),
             final_cutoff_atomic: Arc::new(AtomicU32::new(1_000_000)),
             last_triggered_slot_index: Arc::new(AtomicUsize::new(0)), // <-- INITIALIZED
@@ -361,7 +359,6 @@ pub struct SamplerEngine {
     pub env2_value_atomic: Arc<AtomicU32>,
     pub pitch_mod_atomic: Arc<AtomicU32>,
     pub amp_mod_atomic: Arc<AtomicU32>,
-    pub cutoff_mod_atomic: Arc<AtomicU32>,
     pub saturation_mod_atomic: Arc<AtomicU32>,
     pub final_cutoff_atomic: Arc<AtomicU32>,
     pub last_triggered_slot_index: Arc<AtomicUsize>, // <-- ADDED THIS
@@ -384,7 +381,6 @@ impl SamplerEngine {
         env2_value_atomic: Arc<AtomicU32>,
         pitch_mod_atomic: Arc<AtomicU32>,
         amp_mod_atomic: Arc<AtomicU32>,
-        cutoff_mod_atomic: Arc<AtomicU32>,
         saturation_mod_atomic: Arc<AtomicU32>,
         final_cutoff_atomic: Arc<AtomicU32>,
         last_triggered_slot_index: Arc<AtomicUsize>, // <-- ADDED THIS
@@ -410,7 +406,6 @@ impl SamplerEngine {
             env2_value_atomic,
             pitch_mod_atomic,
             amp_mod_atomic,
-            cutoff_mod_atomic,
             saturation_mod_atomic,
             final_cutoff_atomic,
             last_triggered_slot_index, // <-- STORED

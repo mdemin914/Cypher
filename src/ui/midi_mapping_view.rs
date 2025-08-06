@@ -19,7 +19,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             // --- Top Panel for static info ---
             TopBottomPanel::top("midi_mapping_top_panel")
-                .frame(Frame::none().inner_margin(egui::Margin::symmetric(0, 8)))
+                .frame(Frame::new().inner_margin(egui::Margin::symmetric(0, 8)))
                 .show_inside(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         if let Ok(last_cc) = app.last_midi_cc_message.read() {
@@ -36,7 +36,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             // --- Bottom Panel for Save/Close buttons ---
             TopBottomPanel::bottom("midi_mapping_bottom_panel")
-                .frame(Frame::none().inner_margin(egui::Margin::same(8)))
+                .frame(Frame::new().inner_margin(egui::Margin::same(8)))
                 .show_inside(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui.add(Button::new("Apply & Save").fill(theme.button_bg)).clicked() {
@@ -60,7 +60,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
 
                 ScrollArea::vertical().show(ui, |ui| {
                     // --- Header Row ---
-                    Frame::none().fill(theme.header_bg).show(ui, |ui| {
+                    Frame::new().fill(theme.header_bg).show(ui, |ui| {
                         ui.columns(3, |columns| {
                             columns[0].vertical_centered(|ui| {
                                 ui.label(RichText::new("Parameter").strong())
@@ -82,7 +82,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         ];
                         for (i, param) in params.iter().enumerate() {
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, *param, &reverse_lookup, app);
                             });
                         }
@@ -96,7 +96,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         ];
                         for (i, param) in params.iter().enumerate() {
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, *param, &reverse_lookup, app);
                             });
                         }
@@ -112,7 +112,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         ];
                         for (i, param) in params.iter().enumerate() {
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, *param, &reverse_lookup, app);
                             });
                         }
@@ -126,7 +126,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         ];
                         for (i, param) in params.iter().enumerate() {
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, *param, &reverse_lookup, app);
                             });
                         }
@@ -137,7 +137,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         for i in 0..NUM_LOOPERS {
                             let param = ControllableParameter::Looper(i);
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, param, &reverse_lookup, app);
                             });
                         }
@@ -148,21 +148,21 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                         for i in 0..NUM_LOOPERS {
                             let param = ControllableParameter::MixerVolume(i);
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, param, &reverse_lookup, app);
                             });
                         }
                         for i in 0..NUM_LOOPERS {
                             let param = ControllableParameter::MixerToggleMute(i);
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, param, &reverse_lookup, app);
                             });
                         }
                         for i in 0..NUM_LOOPERS {
                             let param = ControllableParameter::MixerToggleSolo(i);
                             let row_color = if i % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
-                            Frame::none().fill(row_color).show(ui, |ui| {
+                            Frame::new().fill(row_color).show(ui, |ui| {
                                 draw_mapping_row(ui, param, &reverse_lookup, app);
                             });
                         }

@@ -2,9 +2,6 @@ use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, Host, HostId};
 
-pub fn get_available_hosts() -> Vec<HostId> {
-    cpal::available_hosts()
-}
 
 fn get_host_from_id(host_id: HostId) -> Result<Host> {
     cpal::host_from_id(host_id).map_err(|e| anyhow::anyhow!("Failed to get audio host: {}", e))

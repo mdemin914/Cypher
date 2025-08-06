@@ -1,5 +1,5 @@
 use crate::looper::NUM_LOOPERS;
-use egui::{epaint, Color32, CornerRadius, Stroke, Visuals};
+use egui::{epaint, Color32, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
 
 // --- Helper Functions for New Default Colors ---
@@ -9,7 +9,6 @@ fn default_dark_mode() -> bool { true }
 fn default_main_background() -> Color32 { Color32::from_rgba_unmultiplied(0, 5, 25, 255) }
 fn default_global_text_color() -> Color32 { Color32::from_rgba_unmultiplied(255, 133, 0, 255) }
 fn default_window_stroke_color() -> Color32 { Color32::from_rgba_unmultiplied(46, 0, 85, 85) }
-fn default_white() -> Color32 { Color32::WHITE }
 fn default_black() -> Color32 { Color32::BLACK }
 
 // Top Bar

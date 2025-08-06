@@ -5,10 +5,9 @@ use crate::wavetable_engine::{
     self, SaturationSettings, WavetableEngine, WavetableMixerSettings, WavetableSet,
 };
 use once_cell::sync::Lazy;
-use rayon::prelude::*; // Added for parallel processing
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
 // --- Algorithmic Optimizations: Fast Approximations & LUTs ---
@@ -207,8 +206,7 @@ impl Synth {
             }
             EngineParamsUnion::Sampler(p) => {
                 SynthEngine::Sampler(sampler_engine::SamplerEngine::new(
-                    sample_rate, p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9, p.10, p.11, p.12,
-                    p.13,
+                    sample_rate, p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, p.9, p.10, p.11, p.12
                 ))
             }
         }
@@ -684,7 +682,6 @@ pub struct SamplerParams(
     pub Arc<AtomicU32>,                  // Env2 Value
     pub Arc<AtomicU32>,                  // Pitch Mod
     pub Arc<AtomicU32>,                  // Amp Mod
-    pub Arc<AtomicU32>,                  // Cutoff Mod
     pub Arc<AtomicU32>,                  // Saturation Mod Value
     pub Arc<AtomicU32>,                  // Final Cutoff (Feedback)
     pub Arc<AtomicUsize>,                // Last triggered slot index

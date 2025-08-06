@@ -131,12 +131,11 @@ impl ChordQuality {
     }
 }
 
-/// Represents a recognized chord, with its root, quality, and the original notes played.
+/// Represents a recognized chord, with its root and quality.
 #[derive(Debug, Clone)]
 pub struct Chord {
     pub root: u8,
     pub quality: ChordQuality,
-    pub notes: BTreeSet<u8>,
 }
 
 /// Attempts to recognize a chord from a set of played MIDI notes.
@@ -148,7 +147,7 @@ pub fn recognize_chord(notes: &BTreeSet<u8>) -> Option<Chord> {
 
     // Iterate through each note in the set as a potential root.
     for &potential_root in notes {
-        let mut intervals: BTreeSet<u8> = notes
+        let intervals: BTreeSet<u8> = notes
             .iter()
             .map(|&note| (note as i16 - potential_root as i16).rem_euclid(12) as u8)
             .collect();
@@ -166,7 +165,6 @@ pub fn recognize_chord(notes: &BTreeSet<u8>) -> Option<Chord> {
                 return Some(Chord {
                     root: potential_root,
                     quality,
-                    notes: notes.clone(),
                 });
             }
         }

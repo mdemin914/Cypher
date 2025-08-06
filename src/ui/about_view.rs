@@ -1,6 +1,6 @@
 // src/ui/about_view.rs
 use crate::app::CypherApp;
-use egui::{Align, Frame, RichText, Ui, Window};
+use egui::{Align, Frame, RichText, Window};
 
 pub fn draw_about_window(app: &mut CypherApp, ctx: &egui::Context) {
     // --- Text Size Constants ---

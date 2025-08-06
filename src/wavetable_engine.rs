@@ -7,7 +7,6 @@ use crate::synth::{FastTanh, EXP_LUT, POW2_LUT}; // Use our performance utilitie
 use egui::{epaint, lerp, Rect}; // Added `Rect` for the cache
 use rayon::prelude::*; // Import Rayon for parallel processing
 use serde::{Deserialize, Serialize};
-use std::f32::consts::{PI, TAU};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 

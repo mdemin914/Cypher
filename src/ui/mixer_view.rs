@@ -3,8 +3,8 @@ use crate::audio_engine::AudioCommand;
 use crate::looper::NUM_LOOPERS;
 use crate::synth::LfoRateMode;
 use egui::{
-    epaint, vec2, Align, Color32, ComboBox, DragValue, Frame, Id, Layout, Pos2, Rect, Response,
-    RichText, Rounding, Sense, Stroke, Ui,
+    epaint, vec2, Align, Color32, ComboBox, CornerRadius, DragValue, Frame, Layout, Pos2, Rect,
+    Response, RichText, Sense, Stroke, Ui,
 };
 use std::sync::atomic::Ordering;
 
@@ -20,7 +20,6 @@ fn linear_to_db(linear: f32) -> f32 {
 // Custom volume fader widget (vertical)
 fn volume_fader(
     ui: &mut Ui,
-    id: Id,
     value: &mut f32,
     peak_level: f32,
     theme: &crate::theme::Theme,
@@ -51,7 +50,7 @@ fn volume_fader(
 
         painter.rect(
             rect,
-            Rounding::from(3.0),
+            CornerRadius::from(3.0),
             fader_bg_color,
             Stroke::NONE,
             epaint::StrokeKind::Inside,
@@ -70,7 +69,7 @@ fn volume_fader(
             } else {
                 meter_color // Use the passed-in meter color
             };
-            painter.rect_filled(bar_rect, Rounding::from(3.0), color);
+            painter.rect_filled(bar_rect, CornerRadius::from(3.0), color);
         }
 
         // 3. Draw the fader thumb
@@ -81,7 +80,7 @@ fn volume_fader(
             Rect::from_center_size(thumb_center, vec2(rect.width() + 4.0, thumb_height));
         painter.rect(
             thumb_rect,
-            Rounding::from(3.0),
+            CornerRadius::from(3.0),
             theme.mixer.fader_thumb_color,
             Stroke::new(1.0, theme.global_text_color),
             epaint::StrokeKind::Inside,
@@ -105,7 +104,7 @@ fn gain_reduction_meter(
         // 1. Draw the meter track (background)
         painter.rect(
             rect,
-            Rounding::from(3.0),
+            CornerRadius::from(3.0),
             theme.mixer.fader_track_bg,
             Stroke::NONE,
             epaint::StrokeKind::Inside,
@@ -115,7 +114,7 @@ fn gain_reduction_meter(
             let bar_height = rect.height() * reduction_normalized.clamp(0.0, 1.0);
             let bar_rect =
                 Rect::from_min_size(rect.left_top(), vec2(rect.width(), bar_height));
-            painter.rect_filled(bar_rect, Rounding::from(3.0), theme.mixer.limiter_gr_color);
+            painter.rect_filled(bar_rect, CornerRadius::from(3.0), theme.mixer.limiter_gr_color);
         }
     }
     response
@@ -145,7 +144,7 @@ pub fn horizontal_volume_fader(
 
         painter.rect(
             rect,
-            Rounding::ZERO,
+            CornerRadius::ZERO,
             track_bg,
             Stroke::NONE,
             epaint::StrokeKind::Inside,
@@ -160,7 +159,7 @@ pub fn horizontal_volume_fader(
             } else {
                 theme.mixer.meter_normal_color
             };
-            painter.rect_filled(bar_rect, Rounding::ZERO, color);
+            painter.rect_filled(bar_rect, CornerRadius::ZERO, color);
         }
 
         let thumb_width = 8.0;
@@ -172,7 +171,7 @@ pub fn horizontal_volume_fader(
         );
         painter.rect(
             thumb_rect,
-            Rounding::from(3.0),
+            CornerRadius::from(3.0),
             theme.instrument_panel.fader_thumb_color,
             Stroke::new(1.0, theme.global_text_color),
             epaint::StrokeKind::Inside,
@@ -248,7 +247,6 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
         // --- Fader ---
         volume_fader(
             ui,
-            Id::new(("fader", track_id)),
             &mut track.volume,
             app.displayed_peak_levels[track_id],
             &app.theme,
@@ -260,7 +258,6 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
 
 fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
     let mut vol = app.master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
-    let neutral_color = app.theme.mixer.fader_track_bg;
     let master_fader_bg = app.theme.mixer.fader_track_bg.gamma_multiply(3.5);
 
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
@@ -275,7 +272,7 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                     .add(
                         DragValue::new(&mut release_ms)
                             .speed(0.1)
-                            .clamp_range(1.0..=1000.0)
+                            .range(1.0..=1000.0)
                             .suffix("ms"),
                     )
                     .changed()
@@ -300,7 +297,7 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                     .find(|(r, _)| (*r - current_rate).abs() < 1e-6)
                     .map_or_else(|| current_rate.to_string(), |(_, l)| l.to_string());
 
-                ComboBox::from_id_source("limiter_sync_rate")
+                ComboBox::from_id_salt("limiter_sync_rate")
                     .selected_text(current_label)
                     .show_ui(ui, |ui| {
                         for (rate_val, rate_label) in rates {
@@ -368,7 +365,6 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                 app.limiter_threshold.load(Ordering::Relaxed) as f32 / 1_000_000.0;
             if volume_fader(
                 ui,
-                Id::new("threshold_fader"),
                 &mut threshold,
                 0.0,
                 &app.theme,
@@ -381,7 +377,6 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
 
             if volume_fader(
                 ui,
-                Id::new("master_fader"),
                 &mut vol,
                 app.displayed_master_peak_level,
                 &app.theme,
@@ -396,7 +391,7 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
 
 pub fn draw_mixer_panel(app: &mut CypherApp, ui: &mut Ui) {
     // **FIXED**: Re-introduced ui.group() and set frame color correctly.
-    let frame_style = Frame::none().fill(app.theme.mixer.panel_background);
+    let frame_style = Frame::new().fill(app.theme.mixer.panel_background);
     ui.group(|ui| {
         frame_style.show(ui, |ui| {
             ui.set_min_height(300.0);

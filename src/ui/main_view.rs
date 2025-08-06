@@ -11,9 +11,9 @@ use crate::ui::mixer_view::horizontal_volume_fader;
 use crate::ui::slicer_view::draw_slicer_window;
 use chrono::Local;
 use egui::{
-    epaint::{self, PathShape, StrokeKind},
-    vec2, Align, Align2, Button, CentralPanel, Color32, Frame, Id, Layout, Margin, Pos2,
-    ProgressBar, Rect, RichText, Rounding, Sense, Shape, Stroke, TopBottomPanel, Ui, Vec2,
+    epaint::{self, PathShape},
+    vec2, Align2, Button, CentralPanel, Color32, CornerRadius, Frame, Id, Layout, Margin,
+    ProgressBar, Rect, RichText, Sense, Shape, Stroke, TopBottomPanel, Ui, Vec2,
 };
 use std::f32::consts::TAU;
 use std::sync::atomic::Ordering;
@@ -58,7 +58,7 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
     }
 
     TopBottomPanel::top("options_bar")
-        .frame(Frame::none().fill(app.theme.top_bar.background))
+        .frame(Frame::new().fill(app.theme.top_bar.background))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let button = Button::new("Options").fill(app.theme.top_bar.button_bg);
@@ -134,7 +134,7 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
         .resizable(true)
         .default_height(200.0)
         .min_height(50.0)
-        .frame(Frame::none().fill(app.theme.library.panel_background))
+        .frame(Frame::new().fill(app.theme.library.panel_background))
         .show(ctx, |ui| {
             ui::draw_library_panel(app, ui);
         });
@@ -143,13 +143,13 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
         .resizable(true)
         .default_height(220.0)
         .min_height(100.0)
-        .frame(Frame::none().fill(app.theme.mixer.panel_background))
+        .frame(Frame::new().fill(app.theme.mixer.panel_background))
         .show(ctx, |ui| {
             ui::draw_mixer_panel(app, ui);
         });
 
     CentralPanel::default()
-        .frame(Frame::none().fill(app.theme.main_background))
+        .frame(Frame::new().fill(app.theme.main_background))
         .show(ctx, |ui| {
             let top_section_height = 120.0;
             ui.allocate_ui(vec2(ui.available_width(), top_section_height), |ui| {
@@ -253,7 +253,7 @@ fn draw_looper_button(
         };
 
         let stroke = Stroke::new(1.0, theme.loopers.track_colors[id]);
-        ui.painter().rect(rect, Rounding::ZERO, bg_color, stroke, epaint::StrokeKind::Inside);
+        ui.painter().rect(rect, CornerRadius::ZERO, bg_color, stroke, epaint::StrokeKind::Inside);
 
         let waveform = waveform_summary.read().unwrap();
         if !waveform.is_empty() {
@@ -286,7 +286,7 @@ fn draw_looper_button(
             let clear_button_rect = Rect::from_min_size(rect.min + vec2(4.0, rect.height() - button_size.y - 4.0), button_size);
             let resp = ui.interact(clear_button_rect, Id::new(("clear", id)), Sense::click());
             let clear_visuals = ui.style().interact(&resp);
-            ui.painter().rect(clear_button_rect, clear_visuals.rounding(), theme.loopers.clear_button_bg, clear_visuals.bg_stroke, epaint::StrokeKind::Inside);
+            ui.painter().rect(clear_button_rect, clear_visuals.corner_radius, theme.loopers.clear_button_bg, clear_visuals.bg_stroke, epaint::StrokeKind::Inside);
             ui.painter().text(clear_button_rect.center(), Align2::CENTER_CENTER, "Clear", egui::FontId::monospace(14.0), theme.loopers.text_color);
             clear_response = Some(resp);
         }
@@ -300,7 +300,7 @@ fn draw_looper_button(
 }
 
 fn draw_synth_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
+    let frame = Frame::new().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
     frame.show(ui, |ui| {
         ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_cross_justify(true), |ui| {
             ui.label(RichText::new("Synth").monospace().color(app.theme.instrument_panel.label_color));
@@ -338,7 +338,7 @@ fn draw_synth_panel(app: &mut CypherApp, ui: &mut Ui) {
 }
 
 fn draw_sampler_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
+    let frame = Frame::new().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
     frame.show(ui, |ui| {
         ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_cross_justify(true), |ui| {
             ui.label(RichText::new("Sampler").monospace().color(app.theme.instrument_panel.label_color));
@@ -376,7 +376,7 @@ fn draw_sampler_panel(app: &mut CypherApp, ui: &mut Ui) {
 }
 
 fn draw_audio_input_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
+    let frame = Frame::new().fill(app.theme.instrument_panel.panel_background).inner_margin(Margin::from(10.0));
     frame.show(ui, |ui| {
         ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
             ui.label(RichText::new("Audio Input").monospace().color(app.theme.instrument_panel.label_color));
@@ -405,7 +405,7 @@ fn draw_audio_input_panel(app: &mut CypherApp, ui: &mut Ui) {
 }
 
 fn draw_transport_panel(app: &mut CypherApp, ui: &mut Ui) {
-    let frame = Frame::none()
+    let frame = Frame::new()
         .fill(app.theme.transport_controls.panel_background)
         .inner_margin(Margin::from(10.0));
 

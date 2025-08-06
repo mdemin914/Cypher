@@ -1,15 +1,14 @@
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
 use crate::audio_device;
-use crate::audio_engine::{AudioCommand, AudioEngine, MidiMessage};
+use crate::audio_engine::{AudioCommand, AudioEngine};
 use crate::audio_io;
 use crate::looper::{SharedLooperState, NUM_LOOPERS};
 use crate::midi;
-use crate::mixer::{MixerState, MixerTrackState};
+use crate::mixer::MixerState;
 use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::{SamplerKit, SamplerPadFxSettings};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
 use crate::settings::{self, AppSettings, ControllableParameter, MidiControlId};
-use crate::slicer;
 use crate::synth::{
     EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, ModSource, SamplerParams,
     WavetableParams, WAVETABLE_SIZE,
@@ -18,9 +17,8 @@ use crate::theme::Theme;
 use crate::theory::{self, ChordStyle, Scale};
 use crate::ui;
 use crate::wavetable_engine::{self, WavetableEnginePreset, WavetableSet, WavetableSource};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::Local;
-use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, HostId, Stream};
 use egui::Color32;
 use midir::{MidiInputConnection, MidiInputPort};
@@ -908,7 +906,7 @@ impl CypherApp {
 
         let engine_params = [self.get_engine_params(0), self.get_engine_params(1)];
 
-        let (mut engine, looper_states) = AudioEngine::new(
+        let (engine, looper_states) = AudioEngine::new(
             ringbuf_consumer,
             audio_consumer,
             pad_event_producer,
@@ -1015,7 +1013,6 @@ impl CypherApp {
                     state.env2_value_atomic.clone(),
                     state.pitch_mod_atomic.clone(),
                     state.amp_mod_atomic.clone(),
-                    state.cutoff_mod_atomic.clone(),
                     state.saturation_mod_atomic.clone(),
                     state.final_cutoff_atomic.clone(),
                     state.last_triggered_slot_index.clone(),
@@ -1641,6 +1638,7 @@ impl CypherApp {
         }
     }
 
+    #[allow(dead_code)]
     pub fn load_theme(&mut self) {
         if let Some(config_dir) = settings::get_config_dir() {
             let themes_dir = config_dir.join("Themes");

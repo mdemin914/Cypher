@@ -1,9 +1,9 @@
 // src/ui/eighty_eight_keys_view.rs
 use crate::app::{ChordDisplayMode, CypherApp, TheoryMode};
-use crate::theory::{self, Scale};
+use crate::theory::Scale;
 use egui::{
-    epaint, vec2, Align2, Color32, ComboBox, Frame, Pos2, Rect, RichText, Rounding, Sense, Shape,
-    Stroke, Ui,
+    epaint, vec2, ComboBox, CornerRadius, Frame, Pos2, Rect, RichText, Stroke,
+    Ui,
 };
 use std::collections::BTreeMap;
 
@@ -59,7 +59,7 @@ pub fn draw_88_keys_panel(app: &mut CypherApp, ui: &mut Ui) {
             match app.theory_mode {
                 TheoryMode::Scales => {
                     ui.label(RichText::new("Scale:").color(app.theme.library.text_color));
-                    ComboBox::from_id_source("scale_selector")
+                    ComboBox::from_id_salt("scale_selector")
                         .selected_text(app.selected_scale.to_string())
                         .show_ui(ui, |ui| {
                             for scale in Scale::ALL {
@@ -90,7 +90,7 @@ pub fn draw_88_keys_panel(app: &mut CypherApp, ui: &mut Ui) {
                     let selected_name = app.selected_chord_style.name.clone();
                     let mut style_to_load = None;
 
-                    ComboBox::from_id_source("chord_style_selector")
+                    ComboBox::from_id_salt("chord_style_selector")
                         .selected_text(selected_name)
                         .show_ui(ui, |ui| {
                             for (name, path) in &app.available_chord_styles {
@@ -108,7 +108,7 @@ pub fn draw_88_keys_panel(app: &mut CypherApp, ui: &mut Ui) {
         });
         ui.separator();
 
-        Frame::none()
+        Frame::new()
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 draw_piano_keyboard(app, ui);
@@ -152,7 +152,7 @@ fn draw_piano_keyboard(app: &mut CypherApp, ui: &mut Ui) {
             }
         }
 
-        painter.rect(key_rect, Rounding::ZERO, fill_color, Stroke::new(1.0, theme.outline_color), epaint::StrokeKind::Inside);
+        painter.rect(key_rect, CornerRadius::ZERO, fill_color, Stroke::new(1.0, theme.outline_color), epaint::StrokeKind::Inside);
     }
 
     // --- Draw Black Keys ---
@@ -175,7 +175,7 @@ fn draw_piano_keyboard(app: &mut CypherApp, ui: &mut Ui) {
                 }
             }
 
-            painter.rect(key_rect, Rounding::ZERO, fill_color, Stroke::new(1.0, theme.outline_color), epaint::StrokeKind::Inside);
+            painter.rect(key_rect, CornerRadius::ZERO, fill_color, Stroke::new(1.0, theme.outline_color), epaint::StrokeKind::Inside);
         }
     }
 
@@ -188,27 +188,27 @@ fn draw_piano_keyboard(app: &mut CypherApp, ui: &mut Ui) {
 
         for (_pitch_class, notes_in_stack) in &notes_by_pitch_class {
             let anchor_note = notes_in_stack.iter().min_by_key( | (note,
-            _) | note).unwrap().0;
+                                                                      _) | note).unwrap().0;
             let key_center_x = get_key_center_x(anchor_note,
-            &available_rect,
-            white_key_width);
+                                                &available_rect,
+                                                white_key_width);
             let radius = white_key_width * 0.2;
             let stack_offset = radius * 2.2;
             let baseline_y = if is_black_key(anchor_note) {
-            available_rect.min.y + black_key_height - radius - 5.0
+                available_rect.min.y + black_key_height - radius - 5.0
             } else {
-            available_rect.max.y - radius - 5.0
+                available_rect.max.y - radius - 5.0
             };
             let mut sorted_stack = notes_in_stack.clone();
             sorted_stack.sort_by_key( | (note,
-            _) | * note);
+                                            _) | * note);
             for (i,
-            &(_note,
-            color_index)) in sorted_stack.iter().enumerate() {
-            let y_pos = baseline_y - (i as f32 * stack_offset);
-            let center = Pos2::new(key_center_x, y_pos);
-            let color = app.theme.loopers.track_colors[color_index % app.theme.loopers.track_colors.len()];
-            painter.circle(center, radius, color, Stroke::new(1.5, theme.outline_color));
+                &(_note,
+                    color_index)) in sorted_stack.iter().enumerate() {
+                let y_pos = baseline_y - (i as f32 * stack_offset);
+                let center = Pos2::new(key_center_x, y_pos);
+                let color = app.theme.loopers.track_colors[color_index % app.theme.loopers.track_colors.len()];
+                painter.circle(center, radius, color, Stroke::new(1.5, theme.outline_color));
             }
         }
     }

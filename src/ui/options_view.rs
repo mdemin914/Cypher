@@ -1,6 +1,6 @@
 // src/ui/options_view.rs
 use crate::app::CypherApp;
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::{DeviceTrait};
 use egui::{Button, ComboBox, DragValue, Frame, Grid, RichText, Slider, Window};
 use std::sync::atomic::Ordering;
 
@@ -58,7 +58,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                     let mut channel = app.selected_midi_channel.load(Ordering::Relaxed) + 1;
                     ui.horizontal(|ui| {
                         ui.add(Slider::new(&mut channel, 1..=16).show_value(false));
-                        ui.add(DragValue::new(&mut channel).clamp_range(1..=16).speed(0.1));
+                        ui.add(DragValue::new(&mut channel).range(1..=16).speed(0.1));
                     });
                     app.selected_midi_channel.store(channel - 1, Ordering::Relaxed);
                     ui.label(RichText::new("MIDI Channel").color(app.theme.options_window.label_color));

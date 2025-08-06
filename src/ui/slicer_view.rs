@@ -3,12 +3,11 @@ use crate::settings;
 use crate::slicer;
 use crate::theme::SlicerWindowTheme;
 use egui::{
-    epaint, CentralPanel, Frame, Grid, Pos2, Rect, RichText, Sense, Shape, Slider, Stroke,
+    epaint, CentralPanel, Frame, Grid, Pos2, Rect, RichText, Sense, Slider, Stroke,
     TextEdit, TopBottomPanel, Ui, Window,
 };
 use rfd::FileDialog;
 use std::fs;
-use std::path::Path;
 
 fn recalculate_slices(state: &mut SlicerState) {
     let source_audio = if let Some(sa) = &state.source_audio {
@@ -169,7 +168,7 @@ pub fn draw_slicer_window(app: &mut CypherApp, ctx: &egui::Context) {
             let sample_is_loaded = app.slicer_state.source_audio.is_some();
 
             TopBottomPanel::top("slicer_top_panel")
-                .frame(Frame::none().fill(theme.background))
+                .frame(Frame::new().fill(theme.background))
                 .show_inside(ui, |ui| {
                     if sample_is_loaded {
                         let mut params_changed = false;
@@ -227,7 +226,7 @@ pub fn draw_slicer_window(app: &mut CypherApp, ctx: &egui::Context) {
                 });
 
             TopBottomPanel::bottom("slicer_bottom_panel")
-                .frame(Frame::none().fill(theme.background))
+                .frame(Frame::new().fill(theme.background))
                 .show_inside(ui, |ui| {
                     if sample_is_loaded {
                         ui.separator();
@@ -286,10 +285,10 @@ pub fn draw_slicer_window(app: &mut CypherApp, ctx: &egui::Context) {
                 });
 
             CentralPanel::default()
-                .frame(Frame::none())
+                .frame(Frame::new())
                 .show_inside(ui, |ui| {
                     if sample_is_loaded {
-                        Frame::none().fill(theme.waveform_bg_color).show(ui, |ui| {
+                        Frame::new().fill(theme.waveform_bg_color).show(ui, |ui| {
                             ui.label(RichText::new("Waveform").color(theme.label_color));
                             draw_interactive_waveform(ui, &mut app.slicer_state, &theme);
                         });
@@ -385,7 +384,7 @@ fn draw_interactive_waveform(ui: &mut Ui, state: &mut crate::app::SlicerState, t
         let x1 = sample_to_x(*start_sample);
         let x2 = sample_to_x(extended_end_sample);
         let overlay_rect = Rect::from_x_y_ranges(x1..=x2, rect.y_range());
-        painter.rect_filled(overlay_rect, epaint::Rounding::ZERO, overlay_color);
+        painter.rect_filled(overlay_rect, epaint::CornerRadius::ZERO, overlay_color);
     }
 
     let y_center = rect.center().y;

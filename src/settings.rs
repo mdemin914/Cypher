@@ -1,5 +1,5 @@
 // src/settings.rs
-use crate::looper::NUM_LOOPERS;
+
 use serde::{de, Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::env;

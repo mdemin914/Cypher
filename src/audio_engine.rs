@@ -1,17 +1,14 @@
 use crate::looper::{LooperState, SharedLooperState, WAVEFORM_DOWNSAMPLE_SIZE, NUM_LOOPERS};
-use crate::mixer::{MixerState, MixerTrackState};
+use crate::mixer::MixerState;
 use crate::sampler::SamplerPadFxSettings;
-use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
+use crate::sampler_engine::NUM_SAMPLE_SLOTS;
 use crate::synth::{
-    Adsr, AdsrSettings, AdsrState, Engine, EngineParamsUnion, EngineWithVolumeAndPeak, FastTanh,
-    LfoRateMode, SamplerParams, Synth, SynthEngine, WavetableParams,
+    Adsr, AdsrSettings, AdsrState, Engine, EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode,
+    Synth, SynthEngine,
 };
-use crate::wavetable_engine;
 use anyhow::Result;
 use hound;
 use ringbuf::{HeapConsumer, HeapProducer};
-use rodio::source::Source;
-use rodio::Decoder;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
@@ -1280,11 +1277,6 @@ impl AudioEngine {
                             let makeup_gain = 1.0 / (drive.sqrt());
                             amp_sample = clipped * makeup_gain;
                         }
-
-                        if pad.gate_counter > 0 {
-                            pad.gate_counter -= 1;
-                        }
-                        let is_gate_open = pad.gate_counter > 0;
 
                         // NEW, FULLY CORRECTED LOGIC
                         let mut wet_sample = 0.0;

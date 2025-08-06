@@ -1,26 +1,19 @@
-use egui::Layout;
 use crate::app::{CypherApp, EngineState, SynthUISection};
 use crate::asset::Asset;
 use crate::audio_engine::AudioCommand;
-use crate::sampler_engine::{self, SamplerVisualizerSnapshot, NUM_SAMPLE_SLOTS};
-use crate::settings::MidiControlId;
+use crate::sampler_engine::NUM_SAMPLE_SLOTS;
 use crate::synth::{
     AdsrSettings, FilterMode, LfoRateMode, LfoWaveform, ModDestination, ModRouting, ModSource,
 };
 use crate::theme::SynthEditorTheme;
-use crate::wavetable_engine::{
-    self, SaturationSettings, VisualizerSnapshot, WavetableSet, WavetableSource,
-};
+use crate::wavetable_engine::{WavetableSet, WavetableSource};
 use egui::{
     epaint::{self, PathShape, RectShape, StrokeKind},
-    lerp, pos2, style::Widgets, Align, Align2, Button, Color32, ComboBox, DragAndDrop, DragValue, Frame,
-    ProgressBar, Rect, RichText, Rounding, ScrollArea, SelectableLabel, Sense, Shape, Slider,
-    Stroke, Ui, Vec2, Window,
+    lerp, pos2, Align, Align2, Button, Color32, ComboBox, CornerRadius, DragAndDrop, Frame, Layout,
+    ProgressBar, Rect, RichText, ScrollArea, Sense, Shape, Slider, Stroke, Ui, Vec2, Window,
 };
-use rfd::FileDialog;
-use std::f32::consts::TAU;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 const SYNTH_EDITOR_MAX_WIDTH: f32 = 1000.0;
@@ -53,7 +46,7 @@ fn custom_button(
 
         ui.painter().rect(
             rect,
-            Rounding::ZERO, // No rounding
+            CornerRadius::ZERO, // No rounding
             bg_color,
             Stroke::NONE,
             StrokeKind::Inside,
@@ -120,13 +113,13 @@ pub fn draw_synth_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             ui.columns(2, |columns| {
                 ScrollArea::vertical()
-                    .id_source("engine_0_scroll")
+                    .id_salt("engine_0_scroll")
                     .show(&mut columns[0], |ui| {
                         ui.set_min_height(SYNTH_EDITOR_DEFAULT_HEIGHT - 50.0);
                         draw_engine_panel(app, ui, 0);
                     });
                 ScrollArea::vertical()
-                    .id_source("engine_1_scroll")
+                    .id_salt("engine_1_scroll")
                     .show(&mut columns[1], |ui| {
                         ui.set_min_height(SYNTH_EDITOR_DEFAULT_HEIGHT - 50.0);
                         draw_engine_panel(app, ui, 1);
@@ -138,7 +131,7 @@ pub fn draw_synth_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
 
 fn draw_engine_panel(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
     let theme = app.theme.synth_editor_window.clone();
-    let frame = Frame::none().fill(theme.engine_panel_bg);
+    let frame = Frame::new().fill(theme.engine_panel_bg);
 
     frame.show(ui, |ui| {
         let mut command_to_send = None;
@@ -164,18 +157,20 @@ fn draw_engine_panel(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
                 } else {
                     "Sampler"
                 };
-                ComboBox::from_id_source(format!("engine_type_{}", engine_index))
+                ComboBox::from_id_salt(format!("engine_type_{}", engine_index))
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
                         let style = ui.style_mut();
                         style.visuals.panel_fill = theme.combo_popup_bg;
                         style.visuals.selection.bg_fill = theme.combo_selection_bg;
-                        if ui.add(SelectableLabel::new(is_wavetable, "Wavetable"))
+                        if ui
+                            .add(egui::Button::new("Wavetable").selected(is_wavetable))
                             .clicked()
                         {
                             app.set_engine_type(engine_index, true);
                         }
-                        if ui.add(SelectableLabel::new(!is_wavetable, "Sampler"))
+                        if ui
+                            .add(egui::Button::new("Sampler").selected(!is_wavetable))
                             .clicked()
                         {
                             app.set_engine_type(engine_index, false);
@@ -262,7 +257,7 @@ fn draw_engine_panel(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
         );
 
         // --- Visualizer ---
-        Frame::none().fill(theme.visualizer_bg).show(ui, |ui| {
+        Frame::new().fill(theme.visualizer_bg).show(ui, |ui| {
             let rect = ui.available_rect_before_wrap();
             let visualizer_height = 100.0;
             let rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), visualizer_height));
@@ -311,7 +306,8 @@ fn draw_engine_panel(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
                 ];
                 for section in sections {
                     let is_selected = app.active_synth_section[engine_index] == section;
-                    if ui.add(SelectableLabel::new(is_selected, section.to_string()).frame(true))
+                    if ui
+                        .add(egui::Button::new(section.to_string()).selected(is_selected).frame(true))
                         .clicked()
                     {
                         app.active_synth_section[engine_index] = section;
@@ -322,7 +318,7 @@ fn draw_engine_panel(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
         ui.separator();
 
         // --- Control Section ---
-        Frame::none().fill(theme.section_bg).show(ui, |ui| {
+        Frame::new().fill(theme.section_bg).show(ui, |ui| {
             match app.active_synth_section[engine_index] {
                 SynthUISection::Wavetable => draw_wavetable_controls(app, ui, engine_index),
                 SynthUISection::Sampler => draw_sampler_controls(app, ui, engine_index),
@@ -387,7 +383,7 @@ fn draw_wavetable_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize
         });
 
         for i in 0..4 {
-            let frame = Frame::none().fill(frame_fill);
+            let frame = Frame::new().fill(frame_fill);
             let group_response = frame.show(ui, |ui| {
                 ui.set_min_width(ui.available_width() - 10.0);
                 ui.vertical(|ui| {
@@ -437,7 +433,7 @@ fn draw_wavetable_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize
             if is_hovered && DragAndDrop::has_any_payload(ui.ctx()) {
                 ui.painter().rect_stroke(
                     drop_target_rect,
-                    Rounding::ZERO,
+                    CornerRadius::ZERO,
                     ui.style().visuals.selection.stroke,
                     StrokeKind::Inside,
                 );
@@ -582,7 +578,7 @@ fn draw_sampler_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) 
                 if DragAndDrop::has_any_payload(ui.ctx()) {
                     ui.painter().rect_stroke(
                         drop_target_rect,
-                        Rounding::ZERO,
+                        CornerRadius::ZERO,
                         ui.style().visuals.selection.stroke,
                         StrokeKind::Inside,
                     );
@@ -694,7 +690,7 @@ fn draw_saturation_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
     let rect = response.rect;
     painter.rect(
         rect,
-        Rounding::ZERO,
+        CornerRadius::ZERO,
         theme.visualizer_bg,
         Stroke::NONE,
         StrokeKind::Inside,
@@ -787,14 +783,14 @@ fn draw_filter_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize) {
                 visuals.active.bg_fill = theme.control_hover_bg;
 
                 let initial_mode = filter.mode;
-                ComboBox::from_id_source(format!("filter_mode_combo_{}", engine_index))
+                ComboBox::from_id_salt(format!("filter_mode_combo_{}", engine_index))
                     .selected_text(filter.mode.to_string())
                     .show_ui(ui, |ui| {
                         let style = ui.style_mut();
                         style.visuals.panel_fill = theme.combo_popup_bg;
                         style.visuals.selection.bg_fill = theme.combo_selection_bg;
                         for mode in FilterMode::ALL {
-                            if ui.add(SelectableLabel::new(filter.mode == mode, mode.to_string()))
+                            if ui.add(egui::Button::new(mode.to_string()).selected(filter.mode == mode))
                                 .clicked()
                             {
                                 filter.mode = mode;
@@ -959,7 +955,7 @@ fn draw_lfo_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize, lfo_
                 visuals.active.bg_fill = theme.control_hover_bg;
 
                 let initial_waveform = lfo.waveform;
-                ComboBox::from_id_source(format!("lfo_shape_combo_{}_{}", engine_index, lfo_num))
+                ComboBox::from_id_salt(format!("lfo_shape_combo_{}_{}", engine_index, lfo_num))
                     .selected_text(lfo.waveform.to_string())
                     .show_ui(ui, |ui| {
                         let style = ui.style_mut();
@@ -977,10 +973,10 @@ fn draw_lfo_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize, lfo_
                             {
                                 ui.add_enabled(
                                     false,
-                                    egui::SelectableLabel::new(false, shape.to_string()),
+                                    egui::Button::new(shape.to_string()).selected(false),
                                 );
                             } else {
-                                if ui.add(SelectableLabel::new(lfo.waveform == shape, shape.to_string()))
+                                if ui.add(egui::Button::new(shape.to_string()).selected(lfo.waveform == shape))
                                     .clicked()
                                 {
                                     lfo.waveform = shape;
@@ -1011,7 +1007,7 @@ fn draw_lfo_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize, lfo_
                         if ui.add(
                             egui::DragValue::new(&mut lfo.hz_rate)
                                 .speed(0.01)
-                                .clamp_range(0.01..=20.0),
+                                .range(0.01..=20.0),
                         )
                             .changed()
                         {
@@ -1048,16 +1044,15 @@ fn draw_lfo_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize, lfo_
                             .find(|(r, _)| (*r - lfo.sync_rate).abs() < 1e-6)
                             .map_or_else(|| lfo.sync_rate.to_string(), |(_, l)| l.to_string());
                         let initial_rate = lfo.sync_rate;
-                        ComboBox::from_id_source(format!("lfo_sync_rate_{}_{}", engine_index, lfo_num))
+                        ComboBox::from_id_salt(format!("lfo_sync_rate_{}_{}", engine_index, lfo_num))
                             .selected_text(current_label)
                             .show_ui(ui, |ui| {
                                 let style = ui.style_mut();
                                 style.visuals.panel_fill = theme.combo_popup_bg;
                                 style.visuals.selection.bg_fill = theme.combo_selection_bg;
                                 for (rate_val, rate_label) in rates {
-                                    if ui.add(SelectableLabel::new(
+                                    if ui.add(egui::Button::new(rate_label).selected(
                                         lfo.sync_rate == rate_val,
-                                        rate_label,
                                     ))
                                         .clicked()
                                     {
@@ -1077,13 +1072,13 @@ fn draw_lfo_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usize, lfo_
                 visuals.widgets.inactive.bg_fill = theme.control_bg;
                 visuals.selection.bg_fill = theme.button_active_bg; // Use button color for selection
 
-                if ui.add(SelectableLabel::new(lfo.mode == LfoRateMode::Hz, "Hz").frame(true))
+                if ui.add(egui::Button::new("Hz").selected(lfo.mode == LfoRateMode::Hz).frame(true))
                     .clicked()
                 {
                     lfo.mode = LfoRateMode::Hz;
                     changed = true;
                 }
-                if ui.add(SelectableLabel::new(lfo.mode == LfoRateMode::Sync, "Sync").frame(true))
+                if ui.add(egui::Button::new("Sync").selected(lfo.mode == LfoRateMode::Sync).frame(true))
                     .clicked()
                 {
                     lfo.mode = LfoRateMode::Sync;
@@ -1150,9 +1145,8 @@ fn draw_mod_matrix_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
                             style.visuals.selection.bg_fill = theme.combo_selection_bg;
 
                             for source in ModSource::ALL {
-                                if ui.add(SelectableLabel::new(
+                                if ui.add(egui::Button::new(source.to_string()).selected(
                                     routing.source == source,
-                                    source.to_string(),
                                 ))
                                     .clicked()
                                 {
@@ -1180,12 +1174,11 @@ fn draw_mod_matrix_controls(app: &mut CypherApp, ui: &mut Ui, engine_index: usiz
                                 if !is_wavetable && is_wt_dest {
                                     ui.add_enabled(
                                         false,
-                                        egui::SelectableLabel::new(false, dest.to_string()),
+                                        egui::Button::new(dest.to_string()).selected(false),
                                     );
                                 } else {
-                                    if ui.add(SelectableLabel::new(
+                                    if ui.add(egui::Button::new(dest.to_string()).selected(
                                         routing.destination == dest,
-                                        dest.to_string(),
                                     ))
                                         .clicked()
                                     {
@@ -1286,7 +1279,7 @@ fn draw_wavetable_preview(app: &mut CypherApp, ui: &mut Ui, rect: Rect, engine_i
 
         let background = Shape::Rect(RectShape::new(
             rect,
-            Rounding::ZERO,
+            CornerRadius::ZERO,
             theme.visualizer_bg,
             Stroke::NONE,
             StrokeKind::Inside,
@@ -1484,7 +1477,7 @@ fn draw_sampler_waveform_preview(app: &mut CypherApp, ui: &mut Ui, rect: Rect, e
 
         let background = Shape::Rect(RectShape::new(
             rect,
-            Rounding::ZERO,
+            CornerRadius::ZERO,
             theme.visualizer_bg,
             Stroke::NONE,
             StrokeKind::Inside,
