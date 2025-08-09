@@ -1,15 +1,15 @@
 // src/ui/options_view.rs
 use crate::app::CypherApp;
-use cpal::traits::{DeviceTrait};
-use egui::{Button, ComboBox, DragValue, Frame, Grid, RichText, Slider, Window};
+use cpal::traits::DeviceTrait;
+use egui::{Button, Checkbox, DragValue, Frame, Grid, RichText, ScrollArea, Slider, Window};
 use std::sync::atomic::Ordering;
 
 pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
-    let mut midi_port_changed = false;
+    let mut midi_ports_changed = false;
     let mut save_and_close = false;
     let mut apply_was_clicked = false;
     let mut host_changed = false;
-    let mut close_options_and_open_about = false; // <-- NEW FLAG
+    let mut close_options_and_open_about = false;
 
     Window::new("Options")
         .open(&mut app.options_window_open)
@@ -27,34 +27,41 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
             ui.heading(RichText::new("MIDI Settings").color(app.theme.options_window.heading_color));
             ui.add_space(10.0);
 
-            Grid::new("midi_settings_grid")
-                .num_columns(2)
-                .spacing([120.0, 8.0])
+            ui.label(RichText::new("MIDI Input Devices").color(app.theme.options_window.label_color));
+            Frame::group(ui.style())
+                .inner_margin(egui::Margin::same(6))
+                .fill(app.theme.options_window.widget_bg.linear_multiply(0.8))
+                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                 .show(ui, |ui| {
-                    let mut current_midi_port_index = app.selected_midi_port_index;
-                    let selected_port_name = if let Some(index) = current_midi_port_index {
-                        app.midi_ports.get(index).map_or("Invalid Port", |p| &p.0)
-                    } else {
-                        "No MIDI devices found"
-                    };
-
-                    ComboBox::new("midi_port_combo", "")
-                        .selected_text(selected_port_name)
-                        .show_ui(ui, |ui| {
-                            for (i, (name, _)) in app.midi_ports.iter().enumerate() {
-                                if ui.selectable_label(current_midi_port_index == Some(i), name).clicked() {
-                                    current_midi_port_index = Some(i);
+                    ScrollArea::vertical()
+                        .max_height(80.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if app.midi_ports.is_empty() {
+                                ui.label("No MIDI devices found");
+                            } else {
+                                for (name, _) in app.midi_ports.iter() {
+                                    let mut is_enabled = app.enabled_midi_ports.contains(name);
+                                    if ui.add(Checkbox::new(&mut is_enabled, name)).changed() {
+                                        if is_enabled {
+                                            app.enabled_midi_ports.insert(name.clone());
+                                        } else {
+                                            app.enabled_midi_ports.remove(name);
+                                        }
+                                        midi_ports_changed = true;
+                                    }
                                 }
                             }
                         });
+                });
 
-                    if current_midi_port_index != app.selected_midi_port_index {
-                        app.selected_midi_port_index = current_midi_port_index;
-                        midi_port_changed = true;
-                    }
-                    ui.label(RichText::new("MIDI Input Device").color(app.theme.options_window.label_color));
-                    ui.end_row();
+            ui.add_space(8.0);
 
+            Grid::new("midi_channel_grid")
+                .num_columns(2)
+                .spacing([120.0, 8.0])
+                .show(ui, |ui|{
                     let mut channel = app.selected_midi_channel.load(Ordering::Relaxed) + 1;
                     ui.horizontal(|ui| {
                         ui.add(Slider::new(&mut channel, 1..=16).show_value(false));
@@ -80,7 +87,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                 .spacing([120.0, 8.0])
                 .show(ui, |ui| {
                     let selected_host_name = app.available_hosts[app.selected_host_index].name();
-                    ComboBox::new("host_combo", "").selected_text(selected_host_name)
+                    egui::ComboBox::new("host_combo", "").selected_text(selected_host_name)
                         .show_ui(ui, |ui| {
                             for (i, host_id) in app.available_hosts.iter().enumerate() {
                                 if ui.selectable_label(app.selected_host_index == i, host_id.name()).clicked() {
@@ -95,7 +102,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     let selected_input_name = app.selected_input_device_index.and_then(|i| app.input_devices.get(i)).map(|(s, _)| s.clone());
-                    ComboBox::new("input_device_combo", "")
+                    egui::ComboBox::new("input_device_combo", "")
                         .selected_text(selected_input_name.as_deref().unwrap_or("Select a device"))
                         .show_ui(ui, |ui| {
                             for (i, (name, _)) in app.input_devices.iter().enumerate() {
@@ -108,7 +115,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     let selected_output_name = app.selected_output_device_index.and_then(|i| app.output_devices.get(i)).map(|(s, _)| s.clone());
-                    ComboBox::new("output_device_combo", "")
+                    egui::ComboBox::new("output_device_combo", "")
                         .selected_text(selected_output_name.as_deref().unwrap_or("Select a device"))
                         .show_ui(ui, |ui| {
                             for (i, (name, _)) in app.output_devices.iter().enumerate() {
@@ -146,7 +153,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                         }
                     }
                     let selected_sr_text = if let Some(sr) = app.sample_rates.get(app.selected_sample_rate_index) { sr.to_string() } else { "N/A".to_string() };
-                    ComboBox::new("sample_rate_combo", "").selected_text(selected_sr_text)
+                    egui::ComboBox::new("sample_rate_combo", "").selected_text(selected_sr_text)
                         .show_ui(ui, |ui| {
                             for rate in supported_rates {
                                 if let Some(pos) = app.sample_rates.iter().position(|r| *r == rate) {
@@ -160,7 +167,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     let selected_bs_text = if let Some(bs) = app.buffer_sizes.get(app.selected_buffer_size_index) { bs.to_string() } else { "N/A".to_string() };
-                    ComboBox::new("buffer_size_combo", "").selected_text(selected_bs_text)
+                    egui::ComboBox::new("buffer_size_combo", "").selected_text(selected_bs_text)
                         .show_ui(ui, |ui| {
                             for (i, size) in app.buffer_sizes.iter().enumerate() {
                                 if ui.selectable_label(app.selected_buffer_size_index == i, size.to_string()).clicked() {
@@ -242,7 +249,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
     if apply_was_clicked {
         app.apply_audio_settings();
     }
-    if midi_port_changed {
+    if midi_ports_changed {
         if let Err(e) = app.reconnect_midi() {
             eprintln!("Failed to reconnect MIDI: {}", e);
         }

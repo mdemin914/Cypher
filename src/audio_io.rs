@@ -1,3 +1,5 @@
+// src/audio_io.rs
+
 use crate::audio_engine::AudioEngine;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -186,7 +188,8 @@ where
                     .iter_mut()
                     .for_each(|s| *s = 0.0);
             }
-            let output_buffer = engine.process_buffer(&input_buffer);
+            // **THE FIX IS HERE**: Pass the buffer as mutable
+            let output_buffer = engine.process_buffer(&mut input_buffer);
             for (i, frame) in data.chunks_mut(channels).enumerate() {
                 let sample_value = output_buffer.get(i).copied().unwrap_or(0.0);
                 for sample in frame.iter_mut() {

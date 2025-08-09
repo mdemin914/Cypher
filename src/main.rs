@@ -1,4 +1,3 @@
-// src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
@@ -6,6 +5,8 @@ mod asset;
 mod audio_device;
 mod audio_engine;
 mod audio_io;
+mod fx; // New
+mod fx_components; // New
 mod looper;
 mod midi;
 mod mixer;

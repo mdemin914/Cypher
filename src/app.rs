@@ -1,14 +1,17 @@
+// src/app.rs
+
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine};
 use crate::audio_io;
+use crate::fx;
 use crate::looper::{SharedLooperState, NUM_LOOPERS};
 use crate::midi;
 use crate::mixer::MixerState;
 use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::{SamplerKit, SamplerPadFxSettings};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
-use crate::settings::{self, AppSettings, ControllableParameter, MidiControlId};
+use crate::settings::{self, AppSettings, ControllableParameter, FullMidiControlId};
 use crate::synth::{
     EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, ModSource, SamplerParams,
     WavetableParams, WAVETABLE_SIZE,
@@ -50,7 +53,8 @@ pub enum LibraryView {
     EightyEightKeys,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(default)]
 pub struct SessionData {
     pub mixer_state: MixerState,
     pub synth_preset_path: Option<PathBuf>,
@@ -59,6 +63,9 @@ pub struct SessionData {
     pub is_input_monitored: bool,
     pub transport_len_samples: usize,
     pub original_sample_rate: u32,
+    pub fx_presets: BTreeMap<fx::InsertionPoint, fx::FxPreset>,
+    // New field to save the wet/dry values
+    pub fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, f32>,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -158,6 +165,7 @@ pub struct CypherApp {
     pub slicer_window_open: bool,
     pub midi_mapping_window_open: bool,
     pub about_window_open: bool,
+    pub fx_editor_window_open: bool,
     pub is_recording_output: bool,
     pub recording_notification: Option<(String, Instant)>,
     pub library_path: Vec<String>,
@@ -173,9 +181,9 @@ pub struct CypherApp {
     // --- Audio Engine Resources (managed) ---
     _input_stream: Option<Stream>,
     _output_stream: Option<Stream>,
-    _midi_connection: Option<MidiInputConnection<()>>,
+    _midi_connections: Vec<MidiInputConnection<()>>,
     _command_thread_handle: Option<JoinHandle<()>>,
-    _midi_timer_handle: Option<JoinHandle<()>>,
+    _midi_timer_handles: Vec<JoinHandle<()>>,
     command_sender: Option<mpsc::Sender<AudioCommand>>,
     midi_timer_should_exit: Arc<AtomicBool>,
     pub pad_event_consumer: HeapConsumer<usize>,
@@ -196,6 +204,7 @@ pub struct CypherApp {
     pub xrun_count: Arc<AtomicUsize>,
     pub live_midi_notes: Arc<RwLock<BTreeSet<u8>>>,
     pub should_toggle_record_from_midi: Arc<AtomicBool>,
+    pub should_clear_all_from_midi: Arc<AtomicBool>,
     pub midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
 
     // --- Mixer State ---
@@ -239,17 +248,23 @@ pub struct CypherApp {
     pub slicer_state: SlicerState,
 
     // --- MIDI Mapping State ---
-    pub midi_mappings: Arc<RwLock<BTreeMap<MidiControlId, ControllableParameter>>>,
+    pub midi_mappings: Arc<RwLock<BTreeMap<FullMidiControlId, ControllableParameter>>>,
     pub midi_learn_target: Arc<RwLock<Option<ControllableParameter>>>,
-    pub last_midi_cc_message: Arc<RwLock<Option<(MidiControlId, Instant)>>>,
+    pub last_midi_cc_message: Arc<RwLock<Option<(FullMidiControlId, Instant)>>>,
     pub midi_mod_matrix_learn_target: Arc<RwLock<Option<(usize, usize)>>>,
-    pub last_learned_mod_source: Arc<RwLock<Option<MidiControlId>>>,
+    pub last_learned_mod_source: Arc<RwLock<Option<settings::MidiControlId>>>,
+
+    // --- FX State ---
+    pub active_fx_target: Option<fx::InsertionPoint>,
+    pub fx_presets: BTreeMap<fx::InsertionPoint, fx::FxPreset>,
+    pub fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, Arc<AtomicU32>>,
+    pub available_fx_presets: Vec<(String, PathBuf)>,
 
     // --- Settings State (for UI) ---
     pub available_hosts: Vec<HostId>,
     pub selected_host_index: usize,
     pub midi_ports: Vec<(String, MidiInputPort)>,
-    pub selected_midi_port_index: Option<usize>,
+    pub enabled_midi_ports: BTreeSet<String>,
     pub selected_midi_channel: Arc<AtomicU8>,
     pub input_devices: Vec<(String, Device)>,
     pub output_devices: Vec<(String, Device)>,
@@ -352,6 +367,7 @@ impl CypherApp {
         let gain_reduction_db = Arc::new(AtomicU32::new(0));
         let master_peak_meter = Arc::new(AtomicU32::new(0));
         let should_toggle_record_from_midi = Arc::new(AtomicBool::new(false));
+        let should_clear_all_from_midi = Arc::new(AtomicBool::new(false));
 
         let midi_mappings = Arc::new(RwLock::new(settings.midi_mappings.clone()));
 
@@ -362,6 +378,25 @@ impl CypherApp {
 
         let (_producer, consumer) = HeapRb::<usize>::new(32).split();
 
+        // **NEW**: Initialize the persistent Wet/Dry mix atomics for every slot.
+        let mut fx_wet_dry_mixes = BTreeMap::new();
+        let all_insertion_points = [
+            (0..NUM_LOOPERS)
+                .map(fx::InsertionPoint::Looper)
+                .collect::<Vec<_>>(),
+            (0..2).map(fx::InsertionPoint::Synth).collect::<Vec<_>>(),
+            vec![
+                fx::InsertionPoint::Sampler,
+                fx::InsertionPoint::Input,
+                fx::InsertionPoint::Master,
+            ],
+        ]
+            .concat();
+        for point in all_insertion_points {
+            // Default to 0% wet (100% dry)
+            fx_wet_dry_mixes.insert(point, Arc::new(AtomicU32::new(0)));
+        }
+
         let app = Self {
             options_window_open: false,
             sample_pad_window_open: false,
@@ -370,6 +405,7 @@ impl CypherApp {
             slicer_window_open: false,
             midi_mapping_window_open: false,
             about_window_open: false,
+            fx_editor_window_open: false,
             is_recording_output: false,
             recording_notification: None,
             library_path: Vec::new(),
@@ -382,9 +418,9 @@ impl CypherApp {
             current_session_path: None,
             _input_stream: None,
             _output_stream: None,
-            _midi_connection: None,
+            _midi_connections: Vec::new(),
             _command_thread_handle: None,
-            _midi_timer_handle: None,
+            _midi_timer_handles: Vec::new(),
             command_sender: None,
             midi_timer_should_exit: Arc::new(AtomicBool::new(false)),
             pad_event_consumer: consumer,
@@ -403,6 +439,7 @@ impl CypherApp {
             xrun_count,
             live_midi_notes: Arc::new(RwLock::new(BTreeSet::new())),
             should_toggle_record_from_midi,
+            should_clear_all_from_midi,
             midi_cc_values,
             track_mixer_state,
             peak_meters,
@@ -439,10 +476,14 @@ impl CypherApp {
             last_midi_cc_message: Arc::new(RwLock::new(None)),
             midi_mod_matrix_learn_target: Arc::new(RwLock::new(None)),
             last_learned_mod_source: Arc::new(RwLock::new(None)),
+            active_fx_target: None,
+            fx_presets: BTreeMap::new(),
+            fx_wet_dry_mixes, // New field initialized here
+            available_fx_presets: Vec::new(),
             available_hosts,
             selected_host_index,
             midi_ports: midi::get_midi_ports()?,
-            selected_midi_port_index: None,
+            enabled_midi_ports: BTreeSet::new(),
             selected_midi_channel: Arc::new(AtomicU8::new(settings.midi_channel)),
             input_devices,
             output_devices,
@@ -487,6 +528,7 @@ impl CypherApp {
         app.rescan_asset_library();
         app.rescan_available_themes();
         app.rescan_chord_styles();
+        app.rescan_fx_presets();
 
         // Load first available chord style if none is selected
         let style_to_load = app.available_chord_styles.first().map(|(_, path)| path.clone());
@@ -504,21 +546,17 @@ impl CypherApp {
             .output_device
             .as_ref()
             .and_then(|name| app.output_devices.iter().position(|(d_name, _)| d_name == name));
-        app.selected_midi_port_index = app
-            .settings
-            .midi_port_name
-            .as_ref()
-            .and_then(|name| app.midi_ports.iter().position(|(p_name, _)| p_name == name));
-        if app.selected_midi_port_index.is_none() && !app.midi_ports.is_empty() {
-            app.selected_midi_port_index = Some(0);
+
+        // Populate the set of enabled MIDI ports from the settings we just loaded.
+        for port_name in &app.settings.midi_port_names {
+            app.enabled_midi_ports.insert(port_name.clone());
         }
 
         if let Err(e) = app.start_audio() {
             app.audio_settings_status =
                 Some((format!("Failed to auto-start audio: {}", e), Color32::YELLOW));
         } else {
-            app.audio_settings_status =
-                Some(("Audio engine running.".to_string(), Color32::GREEN));
+            app.audio_settings_status = Some(("Audio engine running.".to_string(), Color32::GREEN));
         }
 
         if let Some(path) = app.settings.last_sampler_kit.clone() {
@@ -628,8 +666,7 @@ impl CypherApp {
         slot_index: usize,
     ) {
         // Update UI state
-        if let EngineState::Sampler(sampler_state) = &mut self.engine_states[engine_index]
-        {
+        if let EngineState::Sampler(sampler_state) = &mut self.engine_states[engine_index] {
             sampler_state.sample_names[slot_index] = "Empty".to_string();
             sampler_state.sample_paths[slot_index] = None;
             *sampler_state.sample_data_for_ui[slot_index].write().unwrap() = Vec::new();
@@ -702,10 +739,7 @@ impl CypherApp {
             let kits_dir = config_dir.join("Kits");
             let sessions_dir = config_dir.join("Sessions");
 
-            for entry in WalkDir::new(&samples_dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            for entry in WalkDir::new(&samples_dir).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file()
                     && entry.path().extension().map_or(false, |e| e == "wav")
                 {
@@ -722,10 +756,7 @@ impl CypherApp {
                     }
                 }
             }
-            for entry in WalkDir::new(&presets_dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            for entry in WalkDir::new(&presets_dir).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file()
                     && entry.path().extension().map_or(false, |e| e == "json")
                 {
@@ -760,7 +791,12 @@ impl CypherApp {
                 }
             }
             if sessions_dir.is_dir() {
-                for entry in WalkDir::new(&sessions_dir).min_depth(1).max_depth(1).into_iter().filter_map(|e| e.ok()) {
+                for entry in WalkDir::new(&sessions_dir)
+                    .min_depth(1)
+                    .max_depth(1)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
                     if entry.file_type().is_dir() {
                         let segments = vec![entry.file_name().to_string_lossy().to_string()];
                         if let Some(session_ref) = SessionRef::new(entry.path().to_path_buf()) {
@@ -779,10 +815,7 @@ impl CypherApp {
         if let Some(config_dir) = settings::get_config_dir() {
             let themes_dir = config_dir.join("Themes");
             if themes_dir.is_dir() {
-                for entry in WalkDir::new(themes_dir)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                {
+                for entry in WalkDir::new(themes_dir).into_iter().filter_map(|e| e.ok()) {
                     if entry.file_type().is_file()
                         && entry.path().extension().map_or(false, |e| e == "json")
                     {
@@ -808,11 +841,18 @@ impl CypherApp {
                 let default_style_path = styles_dir.join("Pop Triads.json");
                 if !default_style_path.exists() {
                     let mut default_suggestions = BTreeMap::new();
-                    default_suggestions.insert("dominant".to_string(), theory::ChordQuality::MajorTriad);
-                    default_suggestions.insert("subdominant".to_string(), theory::ChordQuality::MajorTriad);
-                    default_suggestions.insert("relative_minor".to_string(), theory::ChordQuality::MinorTriad);
-                    default_suggestions.insert("relative_major".to_string(), theory::ChordQuality::MajorTriad);
-                    default_suggestions.insert("dominant_of_dominant".to_string(), theory::ChordQuality::MajorTriad);
+                    default_suggestions
+                        .insert("dominant".to_string(), theory::ChordQuality::MajorTriad);
+                    default_suggestions
+                        .insert("subdominant".to_string(), theory::ChordQuality::MajorTriad);
+                    default_suggestions
+                        .insert("relative_minor".to_string(), theory::ChordQuality::MinorTriad);
+                    default_suggestions
+                        .insert("relative_major".to_string(), theory::ChordQuality::MajorTriad);
+                    default_suggestions.insert(
+                        "dominant_of_dominant".to_string(),
+                        theory::ChordQuality::MajorTriad,
+                    );
                     let default_style = ChordStyle {
                         name: "Pop Triads".to_string(),
                         suggestions: default_suggestions,
@@ -825,10 +865,13 @@ impl CypherApp {
 
             if styles_dir.is_dir() {
                 for entry in WalkDir::new(styles_dir).into_iter().filter_map(|e| e.ok()) {
-                    if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "json") {
+                    if entry.file_type().is_file()
+                        && entry.path().extension().map_or(false, |e| e == "json")
+                    {
                         if let Ok(json_string) = fs::read_to_string(entry.path()) {
                             if let Ok(style) = serde_json::from_str::<ChordStyle>(&json_string) {
-                                self.available_chord_styles.push((style.name, entry.path().to_path_buf()));
+                                self.available_chord_styles
+                                    .push((style.name, entry.path().to_path_buf()));
                             }
                         }
                     }
@@ -836,6 +879,31 @@ impl CypherApp {
             }
         }
         self.available_chord_styles.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    pub fn rescan_fx_presets(&mut self) {
+        self.available_fx_presets.clear();
+        if let Some(config_dir) = settings::get_config_dir() {
+            let fx_dir = config_dir.join("FX");
+            if !fx_dir.exists() {
+                // Create the directory if it doesn't exist so the user has a place to put presets.
+                fs::create_dir_all(&fx_dir).ok();
+            }
+
+            if fx_dir.is_dir() {
+                for entry in WalkDir::new(fx_dir).into_iter().filter_map(|e| e.ok()) {
+                    if entry.file_type().is_file()
+                        && entry.path().extension().map_or(false, |e| e == "json")
+                    {
+                        if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                            self.available_fx_presets
+                                .push((name.to_string(), entry.path().to_path_buf()));
+                        }
+                    }
+                }
+            }
+        }
+        self.available_fx_presets.sort_by(|a, b| a.0.cmp(&b.0));
     }
 
     pub fn load_chord_style(&mut self, path: &Path) {
@@ -846,16 +914,24 @@ impl CypherApp {
         }
     }
 
-    pub fn stop_audio(&mut self) {
+    /// Stops all MIDI connections and their associated timer threads.
+    fn stop_midi(&mut self) {
         self.midi_timer_should_exit.store(true, Ordering::Relaxed);
-        if let Some(handle) = self._midi_timer_handle.take() {
+        for handle in self._midi_timer_handles.drain(..) {
             if let Err(e) = handle.join() {
                 eprintln!("Error joining MIDI timer thread: {:?}", e);
             }
         }
         self.midi_timer_should_exit.store(false, Ordering::Relaxed);
 
-        self._midi_connection.take();
+        // Dropping the connections is enough to close them.
+        self._midi_connections.clear();
+        println!("All MIDI connections stopped.");
+    }
+
+    pub fn stop_audio(&mut self) {
+        self.stop_midi();
+
         self.command_sender.take();
         if let Some(handle) = self._command_thread_handle.take() {
             if let Err(e) = handle.join() {
@@ -877,14 +953,8 @@ impl CypherApp {
             .and_then(|i| self.output_devices.get(i).cloned());
         let input_device_name = input_device.as_ref().map(|(name, _)| name.clone());
         let output_device_name = output_device.as_ref().map(|(name, _)| name.clone());
-        let sample_rate = self
-            .sample_rates
-            .get(self.selected_sample_rate_index)
-            .copied();
-        let buffer_size = self
-            .buffer_sizes
-            .get(self.selected_buffer_size_index)
-            .copied();
+        let sample_rate = self.sample_rates.get(self.selected_sample_rate_index).copied();
+        let buffer_size = self.buffer_sizes.get(self.selected_buffer_size_index).copied();
         let (mpsc_sender, mpsc_receiver) = mpsc::channel::<AudioCommand>();
         let command_rb = HeapRb::<AudioCommand>::new(256);
         let (mut ringbuf_producer, ringbuf_consumer) = command_rb.split();
@@ -894,7 +964,6 @@ impl CypherApp {
         let pad_event_rb = HeapRb::<usize>::new(32);
         let (pad_event_producer, pad_event_consumer) = pad_event_rb.split();
         self.pad_event_consumer = pad_event_consumer;
-
 
         self._command_thread_handle = Some(thread::spawn(move || {
             while let Ok(command) = mpsc_receiver.recv() {
@@ -935,7 +1004,9 @@ impl CypherApp {
             self.settings.bpm_rounding,
             self.transport_is_playing.clone(),
             self.should_toggle_record_from_midi.clone(),
+            self.should_clear_all_from_midi.clone(),
             self.midi_cc_values.clone(),
+            self.fx_wet_dry_mixes.clone(), // Pass a clone of the new map
         );
         self.looper_states = looper_states;
         self.transport_playhead = engine.transport_playhead.clone();
@@ -948,17 +1019,16 @@ impl CypherApp {
         self.should_toggle_record_from_midi = engine.should_toggle_record.clone();
         self.midi_cc_values = engine.midi_cc_values.clone();
 
-        let (input_stream, output_stream, active_sr, active_bs) =
-            audio_io::init_and_run_streams(
-                host_id,
-                input_device_name.clone(),
-                output_device_name.clone(),
-                sample_rate,
-                buffer_size,
-                audio_producer,
-                engine,
-                self.xrun_count.clone(),
-            )?;
+        let (input_stream, output_stream, active_sr, active_bs) = audio_io::init_and_run_streams(
+            host_id,
+            input_device_name.clone(),
+            output_device_name.clone(),
+            sample_rate,
+            buffer_size,
+            audio_producer,
+            engine,
+            self.xrun_count.clone(),
+        )?;
 
         self._input_stream = Some(input_stream);
         self._output_stream = Some(output_stream);
@@ -1075,31 +1145,41 @@ impl CypherApp {
     }
 
     pub fn reconnect_midi(&mut self) -> Result<()> {
-        self.midi_timer_should_exit.store(true, Ordering::Relaxed);
-        if let Some(handle) = self._midi_timer_handle.take() {
-            let _ = handle.join();
-        }
-        self.midi_timer_should_exit.store(false, Ordering::Relaxed);
+        // First, stop all existing MIDI connections and timers.
+        self.stop_midi();
 
-        self._midi_connection = None;
-        if let (Some(index), Some(sender)) =
-            (self.selected_midi_port_index, self.command_sender.as_ref())
-        {
-            if let Some(port_info) = self.midi_ports.get(index) {
-                let (conn, handle) = midi::connect_midi(
-                    sender.clone(),
-                    self.live_midi_notes.clone(),
-                    port_info.1.clone(),
-                    self.midi_mappings.clone(),
-                    self.midi_learn_target.clone(),
-                    self.last_midi_cc_message.clone(),
-                    self.midi_cc_values.clone(),
-                    self.midi_mod_matrix_learn_target.clone(),
-                    self.last_learned_mod_source.clone(),
-                    self.midi_timer_should_exit.clone(),
-                )?;
-                self._midi_connection = Some(conn);
-                self._midi_timer_handle = Some(handle);
+        // Now, iterate through all available ports and connect to the enabled ones.
+        if let Some(sender) = self.command_sender.as_ref() {
+            for (port_name, port) in &self.midi_ports {
+                // Check if this port's name is in our set of enabled ports.
+                if self.enabled_midi_ports.contains(port_name) {
+                    println!("Attempting to connect to enabled MIDI port: {}", port_name);
+                    match midi::connect_midi(
+                        sender.clone(),
+                        self.live_midi_notes.clone(),
+                        port.clone(),
+                        port_name.clone(), // Pass the port name to the connection function
+                        self.midi_mappings.clone(),
+                        self.midi_learn_target.clone(),
+                        self.last_midi_cc_message.clone(),
+                        self.midi_cc_values.clone(),
+                        self.midi_mod_matrix_learn_target.clone(),
+                        self.last_learned_mod_source.clone(),
+                        self.midi_timer_should_exit.clone(),
+                        self.should_clear_all_from_midi.clone(),
+                        self.fx_presets.clone(),
+                        self.fx_wet_dry_mixes.clone(), // **FIX**: Pass the persistent atomics
+                    ) {
+                        Ok((conn, handle)) => {
+                            self._midi_connections.push(conn);
+                            self._midi_timer_handles.push(handle);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to connect to MIDI port '{}': {}", port_name, e);
+                            // We continue, to try and connect to other enabled devices.
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -1110,10 +1190,7 @@ impl CypherApp {
             .available_hosts
             .get(self.selected_host_index)
             .map(|id| id.name().to_string());
-        self.settings.midi_port_name = self
-            .selected_midi_port_index
-            .and_then(|index| self.midi_ports.get(index))
-            .map(|(name, _)| name.clone());
+        self.settings.midi_port_names = self.enabled_midi_ports.iter().cloned().collect();
         self.settings.input_device = self
             .selected_input_device_index
             .and_then(|index| self.input_devices.get(index))
@@ -1122,14 +1199,8 @@ impl CypherApp {
             .selected_output_device_index
             .and_then(|index| self.output_devices.get(index))
             .map(|(name, _)| name.clone());
-        self.settings.sample_rate = self
-            .sample_rates
-            .get(self.selected_sample_rate_index)
-            .copied();
-        self.settings.buffer_size = self
-            .buffer_sizes
-            .get(self.selected_buffer_size_index)
-            .copied();
+        self.settings.sample_rate = self.sample_rates.get(self.selected_sample_rate_index).copied();
+        self.settings.buffer_size = self.buffer_sizes.get(self.selected_buffer_size_index).copied();
         self.settings.midi_channel = self.selected_midi_channel.load(Ordering::Relaxed);
         self.settings.input_latency_compensation_ms =
             self.input_latency_compensation_ms.load(Ordering::Relaxed) as f32 / 100.0;
@@ -1218,7 +1289,6 @@ impl CypherApp {
         }
     }
 
-
     pub fn load_kit(&mut self, path: &PathBuf) {
         let absolute_path = if path.is_absolute() {
             path.clone()
@@ -1299,13 +1369,13 @@ impl CypherApp {
                     if let SynthEnginePreset::Wavetable(engine_preset) = &preset.engine_presets[i]
                     {
                         for k in 0..4 {
-                            if let WavetableSource::File(p) = &engine_preset.wavetable_sources[k]
-                            {
+                            if let WavetableSource::File(p) = &engine_preset.wavetable_sources[k] {
                                 if let Some(resolved_path) = self.resolve_path(p) {
                                     if let Ok(source_audio) =
                                         load_source_audio_file_with_sr(&resolved_path)
                                     {
-                                        loaded_wavetables.push((i, k, resolved_path, source_audio));
+                                        loaded_wavetables
+                                            .push((i, k, resolved_path, source_audio));
                                     }
                                 }
                             }
@@ -1358,10 +1428,14 @@ impl CypherApp {
                                 // Queue commands for settings
                                 commands_to_send
                                     .push(AudioCommand::SetAmpAdsr(i, engine_preset.amp_adsr));
-                                commands_to_send
-                                    .push(AudioCommand::SetFilterAdsr(i, engine_preset.filter_adsr));
-                                commands_to_send
-                                    .push(AudioCommand::SetSynthMode(i, engine_preset.is_polyphonic));
+                                commands_to_send.push(AudioCommand::SetFilterAdsr(
+                                    i,
+                                    engine_preset.filter_adsr,
+                                ));
+                                commands_to_send.push(AudioCommand::SetSynthMode(
+                                    i,
+                                    engine_preset.is_polyphonic,
+                                ));
 
                                 // Store the pre-loaded raw audio data
                                 for (loaded_i, loaded_k, resolved_path, source_audio) in
@@ -1464,7 +1538,10 @@ impl CypherApp {
                             match &engine_preset.wavetable_sources[k] {
                                 WavetableSource::File(_) => {
                                     // We only need to generate for files that were actually found and loaded
-                                    if loaded_wavetables.iter().any(|(li, lk, _, _)| *li == i && *lk == k) {
+                                    if loaded_wavetables
+                                        .iter()
+                                        .any(|(li, lk, _, _)| *li == i && *lk == k)
+                                    {
                                         self.generate_and_send_wavetable(
                                             i,
                                             k,
@@ -1652,7 +1729,6 @@ impl CypherApp {
         }
     }
 
-
     pub fn load_theme_from_path(&mut self, path: &Path) {
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
@@ -1730,6 +1806,7 @@ impl CypherApp {
     pub fn initialize_new_preset(&mut self) {
         self.settings.last_synth_preset = None;
         self.current_session_path = None; // A new preset means it's an unsaved session
+        self.clear_all_fx_racks();
 
         for engine_index in 0..2 {
             self.engine_states[engine_index] = EngineState::new_wavetable();
@@ -1928,7 +2005,7 @@ impl CypherApp {
                     if let Some(&root_note) = notes.iter().next() {
                         self.displayed_theory_notes.clear();
                         let scale_notes = theory::get_scale_notes(root_note, self.selected_scale);
-                        for (i,&note) in scale_notes.iter().enumerate() {
+                        for (i, &note) in scale_notes.iter().enumerate() {
                             self.displayed_theory_notes.push((note, i % NUM_LOOPERS));
                         }
                     }
@@ -1986,77 +2063,146 @@ impl CypherApp {
     }
 
     pub fn save_session(&mut self, path_override: Option<PathBuf>) {
-        let session_path = match path_override {
-            Some(p) => p,
+        // 1. Get the configuration directory, which is essential for saving anything.
+        let config_dir = match settings::get_config_dir() {
+            Some(dir) => dir,
             None => {
-                if let Some(config_dir) = settings::get_config_dir() {
-                    let sessions_dir = config_dir.join("Sessions");
-                    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-                    let filename = format!("Session_{}", timestamp);
-                    if let Some(path) = FileDialog::new()
-                        .set_directory(&sessions_dir)
-                        .set_file_name(&filename)
-                        .save_file()
-                    {
-                        path
-                    } else {
-                        return; // User cancelled dialog
-                    }
-                } else {
-                    return;
+                eprintln!("Could not get config directory. Cannot save session.");
+                return;
+            }
+        };
+
+        // 2. Determine the final session directory path.
+        let session_dir = match path_override {
+            // This is a "Save" command on an existing session. The path is provided.
+            Some(dir) => dir,
+            // This is a "Save As..." command. We need to ask the user for a new path.
+            None => {
+                let sessions_dir = config_dir.join("Sessions");
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                let filename = format!("Session_{}", timestamp);
+
+                match FileDialog::new()
+                    .set_directory(&sessions_dir)
+                    .set_file_name(&filename)
+                    .save_file()
+                {
+                    // The dialog returns a file path. We use `.with_extension("")` to turn it into
+                    // a path that we can use as a directory name (e.g., "path/to/MySession").
+                    Some(path) => path.with_extension(""),
+                    // The user cancelled the dialog.
+                    None => return,
                 }
             }
         };
 
-        let session_dir = session_path.with_extension("");
-
+        // 3. Create the session directory. If this fails, we can't continue.
         if let Err(e) = fs::create_dir_all(&session_dir) {
-            eprintln!("Failed to create session directory: {}", e);
+            eprintln!(
+                "Failed to create session directory '{}': {}",
+                session_dir.display(),
+                e
+            );
             return;
         }
 
-        if let Some(config_dir) = settings::get_config_dir() {
-            let mixer_state = MixerState {
-                tracks: self.track_mixer_state.read().unwrap().tracks,
-                master_volume_m_u32: self.master_volume.load(Ordering::Relaxed),
-                limiter_is_active: self.limiter_is_active.load(Ordering::Relaxed),
-                limiter_threshold_m_u32: self.limiter_threshold.load(Ordering::Relaxed),
-                limiter_release_mode: self.limiter_release_mode,
-                limiter_release_ms_m_u32: self.limiter_release_ms.load(Ordering::Relaxed),
-                limiter_release_sync_rate_m_u32: self.limiter_release_sync_rate.load(Ordering::Relaxed),
-            };
+        // 4. Gather all the data for the session file.
+        let mixer_state = MixerState {
+            tracks: self.track_mixer_state.read().unwrap().tracks,
+            master_volume_m_u32: self.master_volume.load(Ordering::Relaxed),
+            limiter_is_active: self.limiter_is_active.load(Ordering::Relaxed),
+            limiter_threshold_m_u32: self.limiter_threshold.load(Ordering::Relaxed),
+            limiter_release_mode: self.limiter_release_mode,
+            limiter_release_ms_m_u32: self.limiter_release_ms.load(Ordering::Relaxed),
+            limiter_release_sync_rate_m_u32: self
+                .limiter_release_sync_rate
+                .load(Ordering::Relaxed),
+        };
 
-            let synth_preset_path = self.settings.last_synth_preset.as_ref().and_then(|p| {
-                p.strip_prefix(&config_dir).ok().map(|rp| rp.to_path_buf())
-            });
-            let sampler_kit_path = self.settings.last_sampler_kit.as_ref().and_then(|p| {
-                p.strip_prefix(&config_dir).ok().map(|rp| rp.to_path_buf())
-            });
+        let synth_preset_path = self.settings.last_synth_preset.as_ref().and_then(|p| {
+            p.strip_prefix(&config_dir)
+                .ok()
+                .map(|rp| rp.to_path_buf())
+        });
+        let sampler_kit_path = self.settings.last_sampler_kit.as_ref().and_then(|p| {
+            p.strip_prefix(&config_dir)
+                .ok()
+                .map(|rp| rp.to_path_buf())
+        });
 
-            let session_data = SessionData {
-                mixer_state,
-                synth_preset_path,
-                sampler_kit_path,
-                is_input_armed: self.audio_input_is_armed.load(Ordering::Relaxed),
-                is_input_monitored: self.audio_input_is_monitored.load(Ordering::Relaxed),
-                transport_len_samples: self.transport_len_samples.load(Ordering::Relaxed),
-                original_sample_rate: self.active_sample_rate,
-            };
+        let fx_wet_dry_mixes = self
+            .fx_wet_dry_mixes
+            .iter()
+            .map(|(point, atomic_val)| {
+                let val_f32 = atomic_val.load(Ordering::Relaxed) as f32 / 1_000_000.0;
+                (*point, val_f32)
+            })
+            .collect();
 
-            let json_path = session_dir.join("session.json");
-            if let Ok(json_string) = serde_json::to_string_pretty(&session_data) {
-                if let Err(e) = fs::write(&json_path, json_string) {
-                    eprintln!("Failed to write session.json: {}", e);
-                    return;
-                }
-            } else {
-                eprintln!("Failed to serialize session data.");
+        let session_data = SessionData {
+            mixer_state,
+            synth_preset_path,
+            sampler_kit_path,
+            is_input_armed: self.audio_input_is_armed.load(Ordering::Relaxed),
+            is_input_monitored: self.audio_input_is_monitored.load(Ordering::Relaxed),
+            transport_len_samples: self.transport_len_samples.load(Ordering::Relaxed),
+            original_sample_rate: self.active_sample_rate,
+            fx_presets: self.fx_presets.clone(),
+            fx_wet_dry_mixes,
+        };
+
+        // 5. Serialize the data and write the `session.json` file.
+        let json_path = session_dir.join("session.json");
+        let json_string = match serde_json::to_string_pretty(&session_data) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to serialize session data: {}", e);
                 return;
             }
+        };
 
-            self.send_command(AudioCommand::SaveSessionAudio { session_path: session_dir.clone() });
-            self.current_session_path = Some(session_dir);
-            self.rescan_asset_library();
+        if let Err(e) = fs::write(&json_path, json_string) {
+            eprintln!(
+                "Failed to write session.json to '{}': {}",
+                json_path.display(),
+                e
+            );
+            return;
+        }
+
+        println!("Successfully saved session data to {}", json_path.display());
+
+        // 6. Only after the JSON is saved successfully, tell the audio thread to save the loops.
+        self.send_command(AudioCommand::SaveSessionAudio {
+            session_path: session_dir.clone(),
+        });
+
+        // 7. Update the application's state to reflect the successful save.
+        self.current_session_path = Some(session_dir);
+        self.rescan_asset_library();
+    }
+
+    pub fn clear_all_fx_racks(&mut self) {
+        self.fx_presets.clear();
+        let all_insertion_points = [
+            (0..NUM_LOOPERS)
+                .map(fx::InsertionPoint::Looper)
+                .collect::<Vec<_>>(),
+            (0..2).map(fx::InsertionPoint::Synth).collect::<Vec<_>>(),
+            vec![
+                fx::InsertionPoint::Sampler,
+                fx::InsertionPoint::Input,
+                fx::InsertionPoint::Master,
+            ],
+        ]
+            .concat();
+
+        for point in all_insertion_points {
+            self.send_command(AudioCommand::ClearFxRack(point));
+            // Also reset the persistent wet/dry mix to its default
+            if let Some(mix) = self.fx_wet_dry_mixes.get(&point) {
+                mix.store(0, Ordering::Relaxed);
+            }
         }
     }
 
@@ -2065,7 +2211,11 @@ impl CypherApp {
         let json_string = match fs::read_to_string(&json_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Failed to read session file {}: {}", json_path.display(), e);
+                eprintln!(
+                    "Failed to read session file {}: {}",
+                    json_path.display(),
+                    e
+                );
                 return;
             }
         };
@@ -2080,6 +2230,7 @@ impl CypherApp {
 
         // --- Begin state restoration ---
         self.send_command(AudioCommand::ClearAll);
+        self.clear_all_fx_racks();
 
         // Send the entire mixer state to the audio thread for atomic update
         let mixer_state = session_data.mixer_state.clone();
@@ -2087,12 +2238,25 @@ impl CypherApp {
 
         // Also update the UI's direct view of the state
         *self.track_mixer_state.write().unwrap() = session_data.mixer_state.clone();
-        self.master_volume.store(session_data.mixer_state.master_volume_m_u32, Ordering::Relaxed);
-        self.limiter_is_active.store(session_data.mixer_state.limiter_is_active, Ordering::Relaxed);
-        self.limiter_threshold.store(session_data.mixer_state.limiter_threshold_m_u32, Ordering::Relaxed);
-        self.limiter_release_mode = session_data.mixer_state.limiter_release_mode; // This was the missing line
-        self.limiter_release_ms.store(session_data.mixer_state.limiter_release_ms_m_u32, Ordering::Relaxed);
-        self.limiter_release_sync_rate.store(session_data.mixer_state.limiter_release_sync_rate_m_u32, Ordering::Relaxed);
+        self.master_volume
+            .store(session_data.mixer_state.master_volume_m_u32, Ordering::Relaxed);
+        self.limiter_is_active.store(
+            session_data.mixer_state.limiter_is_active,
+            Ordering::Relaxed,
+        );
+        self.limiter_threshold.store(
+            session_data.mixer_state.limiter_threshold_m_u32,
+            Ordering::Relaxed,
+        );
+        self.limiter_release_mode = session_data.mixer_state.limiter_release_mode;
+        self.limiter_release_ms.store(
+            session_data.mixer_state.limiter_release_ms_m_u32,
+            Ordering::Relaxed,
+        );
+        self.limiter_release_sync_rate.store(
+            session_data.mixer_state.limiter_release_sync_rate_m_u32,
+            Ordering::Relaxed,
+        );
 
         if let Some(relative_path) = session_data.synth_preset_path {
             if let Some(config_dir) = settings::get_config_dir() {
@@ -2107,8 +2271,24 @@ impl CypherApp {
             }
         }
 
-        self.audio_input_is_armed.store(session_data.is_input_armed, Ordering::Relaxed);
-        self.audio_input_is_monitored.store(session_data.is_input_monitored, Ordering::Relaxed);
+        self.audio_input_is_armed
+            .store(session_data.is_input_armed, Ordering::Relaxed);
+        self.audio_input_is_monitored
+            .store(session_data.is_input_monitored, Ordering::Relaxed);
+
+        // Load FX presets. This now populates the UI-side structures.
+        self.fx_presets = session_data.fx_presets;
+        // Then, send a command to the audio thread to build its own representation.
+        for (insertion_point, preset) in &self.fx_presets {
+            self.send_command(AudioCommand::LoadFxRack(*insertion_point, preset.clone()));
+        }
+
+        // **NEW**: Load the saved wet/dry values into our persistent atomics
+        for (point, value) in session_data.fx_wet_dry_mixes {
+            if let Some(atomic_val) = self.fx_wet_dry_mixes.get(&point) {
+                atomic_val.store((value * 1_000_000.0) as u32, Ordering::Relaxed);
+            }
+        }
 
         for i in 0..NUM_LOOPERS {
             let loop_filename = format!("loop_{}.wav", i);
@@ -2121,8 +2301,12 @@ impl CypherApp {
                 });
             }
         }
-        self.send_command(AudioCommand::SetTransportLen(session_data.transport_len_samples));
+        self.send_command(AudioCommand::SetTransportLen(
+            session_data.transport_len_samples,
+        ));
         self.current_session_path = Some(path.to_path_buf());
+
+        self.reconnect_midi().ok();
     }
 }
 
@@ -2132,6 +2316,11 @@ impl eframe::App for CypherApp {
         // Must be called before any UI is drawn to ensure the display is up to date.
         self.update_theory_display();
         //ctx.set_debug_on_hover(true); // <-- Uncomment for visual debugging of panels
+
+        if self.should_clear_all_from_midi.swap(false, Ordering::Relaxed) {
+            self.clear_all_fx_racks(); // Clear UI state
+            self.send_command(AudioCommand::ClearAllAndPlay); // Command audio thread
+        }
 
         if self.should_toggle_record_from_midi.swap(false, Ordering::Relaxed) {
             self.is_recording_output = !self.is_recording_output;
@@ -2143,8 +2332,11 @@ impl eframe::App for CypherApp {
                     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
                     let filename = format!("LiveRec_{}.wav", timestamp);
                     let path = rec_dir.join(filename);
-                    self.send_command(AudioCommand::StopOutputRecording { output_path: path.clone() });
-                    self.recording_notification = Some((format!("Saved to {}", path.display()), Instant::now()));
+                    self.send_command(AudioCommand::StopOutputRecording {
+                        output_path: path.clone(),
+                    });
+                    self.recording_notification =
+                        Some((format!("Saved to {}", path.display()), Instant::now()));
                 }
             }
         }
@@ -2156,7 +2348,7 @@ impl eframe::App for CypherApp {
         }
 
         if let Ok(mut last_msg) = self.last_midi_cc_message.write() {
-            if let Some((_, time)) = *last_msg {
+            if let Some((_, time)) = &mut *last_msg {
                 if time.elapsed() > std::time::Duration::from_secs(3) {
                     *last_msg = None;
                 }
@@ -2174,12 +2366,14 @@ impl eframe::App for CypherApp {
                 // 4. A value was learned! Update the UI state.
                 match &mut self.engine_states[engine_index] {
                     EngineState::Wavetable(state) => {
-                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index) {
+                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index)
+                        {
                             routing.source = ModSource::MidiCC(control_id);
                         }
                     }
                     EngineState::Sampler(state) => {
-                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index) {
+                        if let Some(routing) = state.mod_matrix.write().unwrap().get_mut(slot_index)
+                        {
                             routing.source = ModSource::MidiCC(control_id);
                         }
                     }

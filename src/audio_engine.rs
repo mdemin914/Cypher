@@ -1,3 +1,7 @@
+// src/audio_engine.rs
+
+use crate::fx;
+use crate::fx_components;
 use crate::looper::{LooperState, SharedLooperState, WAVEFORM_DOWNSAMPLE_SIZE, NUM_LOOPERS};
 use crate::mixer::MixerState;
 use crate::sampler::SamplerPadFxSettings;
@@ -12,7 +16,7 @@ use ringbuf::{HeapConsumer, HeapProducer};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -23,6 +27,123 @@ use std::time::Instant;
 
 const LOOPER_ARM_THRESHOLD: f32 = 0.05;
 const HIGH_RES_CHUNK_SIZE: usize = 256;
+const PARAM_SCALER: f32 = 1_000_000.0;
+
+// --- FXRack struct for the audio thread ---
+/// Manages and processes a chain of DSP components with modulation.
+struct FxRack {
+    components: Vec<Box<dyn fx_components::DspComponent>>,
+    mod_routings: Vec<fx::ModulationRoutingData>,
+    wet_dry_mix: Arc<AtomicU32>, // Now an atomic for real-time control
+    mod_outputs: Vec<f32>,       // Buffer to store current mod outputs
+}
+
+impl FxRack {
+    /// Creates a new FxRack from a preset "recipe".
+    fn new(preset: &fx::FxPreset, wet_dry_mix: Arc<AtomicU32>, sample_rate: f32) -> Self {
+        let mut components: Vec<Box<dyn fx_components::DspComponent>> = Vec::new();
+        let mut mod_routings = Vec::new();
+
+        for link in &preset.chain {
+            let component: Box<dyn fx_components::DspComponent> = match &link.params {
+                fx_components::ComponentParams::Gain(p) => {
+                    Box::new(fx_components::Gain::new(p.clone()))
+                }
+                fx_components::ComponentParams::Delay(p) => {
+                    Box::new(fx_components::DelayLine::new(2000.0, sample_rate, p.clone()))
+                }
+                fx_components::ComponentParams::Filter(p) => {
+                    Box::new(fx_components::Filter::new(sample_rate, p.clone()))
+                }
+                fx_components::ComponentParams::Lfo(p) => {
+                    Box::new(fx_components::Lfo::new(sample_rate, p.clone()))
+                }
+                fx_components::ComponentParams::EnvelopeFollower(p) => {
+                    Box::new(fx_components::EnvelopeFollower::new(sample_rate, p.clone()))
+                }
+                fx_components::ComponentParams::Waveshaper(p) => {
+                    Box::new(fx_components::Waveshaper::new(p.clone()))
+                }
+                fx_components::ComponentParams::Quantizer(p) => {
+                    Box::new(fx_components::Quantizer::new(p.clone()))
+                }
+                fx_components::ComponentParams::Reverb(p) => {
+                    Box::new(fx_components::Reverb::new(sample_rate, p.clone()))
+                }
+                fx_components::ComponentParams::Flanger(p) => {
+                    Box::new(fx_components::Flanger::new(sample_rate, p.clone()))
+                }
+            };
+            components.push(component);
+        }
+
+        // Collect all modulations from all links in the chain
+        for link in &preset.chain {
+            mod_routings.extend_from_slice(&link.modulations);
+        }
+
+        Self {
+            mod_outputs: vec![0.0; components.len()],
+            components,
+            mod_routings,
+            wet_dry_mix, // Use the persistent atomic passed in
+        }
+    }
+
+    /// Processes an entire audio buffer using a two-pass system for modulation.
+    fn process_buffer(&mut self, buffer: &mut [f32]) {
+        let wet_dry_mix_u32 = self.wet_dry_mix.load(Ordering::Relaxed);
+        let wet_mix = wet_dry_mix_u32 as f32 / PARAM_SCALER;
+
+        if wet_mix < 1e-9 && self.components.is_empty() {
+            return; // Optimization: If 100% dry and no components, do nothing.
+        }
+
+        let dry_mix = 1.0 - wet_mix;
+
+        for sample in buffer.iter_mut() {
+            let dry_sample = *sample;
+
+            // 1. Determine the input for the audible FX chain based on the knob (the "Send").
+            // This is your original, correct send logic.
+            let fx_chain_input = dry_sample * wet_mix;
+
+            // 2. Process the wet path. This MUST run every sample to allow tails to decay.
+            // The input for the audible path is the scaled signal from step 1.
+            let mut wet_output = fx_chain_input;
+
+            // ====================================================================
+            // *** IMPROVEMENT: The modulation pass now uses the full dry_sample. ***
+            // This makes modulation sources (like EnvelopeFollower) independent of the
+            // wet/dry mix, allowing for powerful side-chain style effects.
+            for (i, component) in self.components.iter_mut().enumerate() {
+                self.mod_outputs[i] = component.get_mod_output(dry_sample);
+            }
+            // ====================================================================
+
+            // Audio processing pass (this part is unchanged)
+            // It correctly processes the `wet_output` which started as the scaled `fx_chain_input`.
+            for (i, component) in self.components.iter_mut().enumerate() {
+                let mut mods = BTreeMap::new();
+                for route in &self.mod_routings {
+                    if route.target_component_index == i {
+                        let mod_signal =
+                            self.mod_outputs[route.source_component_index] * route.amount;
+                        *mods
+                            .entry(route.target_parameter_name.clone())
+                            .or_insert(0.0) += mod_signal;
+                    }
+                }
+                wet_output = component.process_audio(wet_output, &mods);
+            }
+
+            // --- 3. Final Mix (The "Return") ---
+            // This is your original, correct return logic. It correctly mixes the
+            // attenuated dry signal with the fully processed wet signal.
+            *sample = (dry_sample * dry_mix) + wet_output;
+        }
+    }
+}
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum TransportState {
@@ -183,8 +304,15 @@ impl SamplerPadReverb {
     }
 
     fn process(&mut self, input: f32) -> f32 {
-        let comb_out = self.comb_filters.iter_mut().map(|f| f.process(input)).sum::<f32>() * 0.25;
-        self.all_pass_filters.iter_mut().fold(comb_out, |acc, f| f.process(acc))
+        let comb_out = self
+            .comb_filters
+            .iter_mut()
+            .map(|f| f.process(input))
+            .sum::<f32>()
+            * 0.25;
+        self.all_pass_filters
+            .iter_mut()
+            .fold(comb_out, |acc, f| f.process(acc))
     }
 
     fn set_params(&mut self, size: f32, decay: f32, sample_rate: f32) {
@@ -201,11 +329,14 @@ impl SamplerPadReverb {
     }
 
     fn clear(&mut self) {
-        for f in &mut self.comb_filters { f.buffer.fill(0.0); }
-        for f in &mut self.all_pass_filters { f.buffer.fill(0.0); }
+        for f in &mut self.comb_filters {
+            f.buffer.fill(0.0);
+        }
+        for f in &mut self.all_pass_filters {
+            f.buffer.fill(0.0);
+        }
     }
 }
-
 
 #[derive(Clone)]
 struct SamplerPad {
@@ -234,7 +365,6 @@ impl SamplerPad {
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct MidiMessage {
@@ -329,6 +459,11 @@ pub enum AudioCommand {
     ToggleRecord,
     ToggleMixerMute(usize),
     ToggleMixerSolo(usize),
+
+    // --- FX Commands ---
+    // The FxPreset now contains the `FxChainLink`s with atomic `ComponentParams`.
+    LoadFxRack(fx::InsertionPoint, fx::FxPreset),
+    ClearFxRack(fx::InsertionPoint),
 }
 
 pub struct AudioEngine {
@@ -374,6 +509,14 @@ pub struct AudioEngine {
     pub should_toggle_record: Arc<AtomicBool>,
     engine_0_buffer: Vec<f32>,
     engine_1_buffer: Vec<f32>,
+
+    // --- FX Rack Storage ---
+    fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, Arc<AtomicU32>>,
+    looper_fx_racks: [Option<FxRack>; NUM_LOOPERS],
+    synth_fx_racks: [Option<FxRack>; 2],
+    sampler_fx_rack: Option<FxRack>,
+    input_fx_rack: Option<FxRack>,
+    master_fx_rack: Option<FxRack>,
 }
 
 fn write_wav_file(path: &Path, audio_buffer: &[f32], sample_rate: f32) -> Result<()> {
@@ -396,8 +539,8 @@ fn write_wav_file(path: &Path, audio_buffer: &[f32], sample_rate: f32) -> Result
 
 fn trim_silence(audio_buffer: Vec<f32>) -> Vec<f32> {
     const SILENCE_THRESHOLD: f32 = 0.005; // RMS threshold
-    const BLOCK_SIZE: usize = 512;       // Analyze in chunks of 512 samples
-    const REQUIRED_BLOCKS: usize = 3;    // Need 3 consecutive blocks of sound to confirm start
+    const BLOCK_SIZE: usize = 512; // Analyze in chunks of 512 samples
+    const REQUIRED_BLOCKS: usize = 3; // Need 3 consecutive blocks of sound to confirm start
 
     let num_blocks = audio_buffer.len() / BLOCK_SIZE;
     let mut consecutive_sound_blocks = 0;
@@ -487,7 +630,9 @@ impl AudioEngine {
         bpm_rounding: bool,
         transport_is_playing: Arc<AtomicBool>,
         should_toggle_record: Arc<AtomicBool>,
+        _should_clear_all: Arc<AtomicBool>, // This is now only used on the UI thread
         midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
+        fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, Arc<AtomicU32>>, // Added
     ) -> (Self, Vec<SharedLooperState>) {
         let looper_states: Vec<SharedLooperState> =
             (0..NUM_LOOPERS).map(|_| SharedLooperState::new()).collect();
@@ -497,14 +642,8 @@ impl AudioEngine {
             .collect();
 
         // Separate the Arcs from the parameters before moving engine_params
-        let engine_volumes = [
-            engine_params[0].0.clone(),
-            engine_params[1].0.clone(),
-        ];
-        let engine_peak_meters = [
-            engine_params[0].1.clone(),
-            engine_params[1].1.clone(),
-        ];
+        let engine_volumes = [engine_params[0].0.clone(), engine_params[1].0.clone()];
+        let engine_peak_meters = [engine_params[0].1.clone(), engine_params[1].1.clone()];
 
         let synth = Synth::new(sample_rate, engine_params);
         let sampler_pads = (0..16).map(|_| SamplerPad::new(sample_rate)).collect();
@@ -552,6 +691,12 @@ impl AudioEngine {
             should_toggle_record,
             engine_0_buffer: vec![0.0; 512],
             engine_1_buffer: vec![0.0; 512],
+            fx_wet_dry_mixes,
+            looper_fx_racks: Default::default(),
+            synth_fx_racks: Default::default(),
+            sampler_fx_rack: None,
+            input_fx_rack: None,
+            master_fx_rack: None,
         };
 
         (engine, looper_states)
@@ -560,6 +705,25 @@ impl AudioEngine {
     pub fn handle_commands(&mut self) {
         while let Some(command) = self.command_consumer.pop() {
             match command {
+                AudioCommand::LoadFxRack(insertion_point, preset) => {
+                    if let Some(wet_dry_mix) = self.fx_wet_dry_mixes.get(&insertion_point) {
+                        let new_rack = FxRack::new(&preset, wet_dry_mix.clone(), self.sample_rate);
+                        match insertion_point {
+                            fx::InsertionPoint::Looper(i) => self.looper_fx_racks[i] = Some(new_rack),
+                            fx::InsertionPoint::Synth(i) => self.synth_fx_racks[i] = Some(new_rack),
+                            fx::InsertionPoint::Sampler => self.sampler_fx_rack = Some(new_rack),
+                            fx::InsertionPoint::Input => self.input_fx_rack = Some(new_rack),
+                            fx::InsertionPoint::Master => self.master_fx_rack = Some(new_rack),
+                        }
+                    }
+                }
+                AudioCommand::ClearFxRack(insertion_point) => match insertion_point {
+                    fx::InsertionPoint::Looper(i) => self.looper_fx_racks[i] = None,
+                    fx::InsertionPoint::Synth(i) => self.synth_fx_racks[i] = None,
+                    fx::InsertionPoint::Sampler => self.sampler_fx_rack = None,
+                    fx::InsertionPoint::Input => self.input_fx_rack = None,
+                    fx::InsertionPoint::Master => self.master_fx_rack = None,
+                },
                 AudioCommand::ToggleMixerMute(track_index) => {
                     if let Ok(mut mixer_state) = self.track_mixer_state.write() {
                         if let Some(track) = mixer_state.tracks.get_mut(track_index) {
@@ -577,23 +741,25 @@ impl AudioEngine {
                 AudioCommand::ToggleSynth => {
                     let is_active = self.synth_is_active.load(Ordering::Relaxed);
                     self.synth_is_active.store(!is_active, Ordering::Relaxed);
-                    if !is_active { // if we just activated it
+                    if !is_active {
+                        // if we just activated it
                         self.sampler_is_active.store(false, Ordering::Relaxed);
                     }
                 }
                 AudioCommand::ToggleSampler => {
                     let is_active = self.sampler_is_active.load(Ordering::Relaxed);
                     self.sampler_is_active.store(!is_active, Ordering::Relaxed);
-                    if !is_active { // if we just activated it
+                    if !is_active {
+                        // if we just activated it
                         self.synth_is_active.store(false, Ordering::Relaxed);
                     }
                 }
-                AudioCommand::SetSynthMasterVolume(vol) => {
-                    self.synth_master_volume.store((vol * 1_000_000.0) as u32, Ordering::Relaxed);
-                }
-                AudioCommand::SetSamplerMasterVolume(vol) => {
-                    self.sampler_volume.store((vol * 1_000_000.0) as u32, Ordering::Relaxed);
-                }
+                AudioCommand::SetSynthMasterVolume(vol) => self
+                    .synth_master_volume
+                    .store((vol * 1_000_000.0) as u32, Ordering::Relaxed),
+                AudioCommand::SetSamplerMasterVolume(vol) => self
+                    .sampler_volume
+                    .store((vol * 1_000_000.0) as u32, Ordering::Relaxed),
                 AudioCommand::ToggleTransport => {
                     if self.transport_is_playing.load(Ordering::Relaxed) {
                         // This is the logic from the StopTransport command
@@ -612,7 +778,8 @@ impl AudioEngine {
                 }
                 AudioCommand::ToggleMuteAll => {
                     if let Ok(mut mixer_state) = self.track_mixer_state.write() {
-                        let should_mute_all = mixer_state.tracks.iter().any(|track| !track.is_muted);
+                        let should_mute_all =
+                            mixer_state.tracks.iter().any(|track| !track.is_muted);
                         for track in mixer_state.tracks.iter_mut() {
                             track.is_muted = should_mute_all;
                         }
@@ -634,7 +801,9 @@ impl AudioEngine {
                                 return;
                             }
 
-                            if let Err(e) = write_wav_file(&output_path, &trimmed_buffer, sample_rate) {
+                            if let Err(e) =
+                                write_wav_file(&output_path, &trimmed_buffer, sample_rate)
+                            {
                                 eprintln!("Failed to save recording: {}", e);
                             } else {
                                 println!("Recording saved to {}", output_path.display());
@@ -663,15 +832,26 @@ impl AudioEngine {
                                     }
                                     writer.finalize().ok();
                                 } else {
-                                    eprintln!("Failed to create session wav file at {}", path.display());
+                                    eprintln!(
+                                        "Failed to create session wav file at {}",
+                                        path.display()
+                                    );
                                 }
                             });
                         }
                     }
                 }
-                AudioCommand::LoadLoopAudio { looper_index, path, original_sample_rate } => {
+                AudioCommand::LoadLoopAudio {
+                    looper_index,
+                    path,
+                    original_sample_rate,
+                } => {
                     let target_sr = self.sample_rate;
-                    match Self::load_and_resample_wav_for_session(&path, original_sample_rate as f32, target_sr) {
+                    match Self::load_and_resample_wav_for_session(
+                        &path,
+                        original_sample_rate as f32,
+                        target_sr,
+                    ) {
                         Ok(audio_data) => {
                             if let Some(looper) = self.loopers.get_mut(looper_index) {
                                 looper.audio = audio_data;
@@ -724,6 +904,16 @@ impl AudioEngine {
                     if let Ok(mut mixer_state) = self.track_mixer_state.write() {
                         *mixer_state = MixerState::default();
                     }
+                    // NEW: Clear all FX racks
+                    for rack in self.looper_fx_racks.iter_mut() {
+                        *rack = None;
+                    }
+                    for rack in self.synth_fx_racks.iter_mut() {
+                        *rack = None;
+                    }
+                    self.sampler_fx_rack = None;
+                    self.input_fx_rack = None;
+                    self.master_fx_rack = None;
                 }
                 AudioCommand::ClearAll => {
                     self.transport_state = TransportState::Paused;
@@ -736,10 +926,21 @@ impl AudioEngine {
                     if let Ok(mut mixer_state) = self.track_mixer_state.write() {
                         *mixer_state = MixerState::default();
                     }
+                    // NEW: Clear all FX racks
+                    for rack in self.looper_fx_racks.iter_mut() {
+                        *rack = None;
+                    }
+                    for rack in self.synth_fx_racks.iter_mut() {
+                        *rack = None;
+                    }
+                    self.sampler_fx_rack = None;
+                    self.input_fx_rack = None;
+                    self.master_fx_rack = None;
                 }
                 AudioCommand::LooperPress(id) => {
                     let is_playing = self.transport_is_playing.load(Ordering::Relaxed);
-                    let transport_has_started = self.transport_len_samples.load(Ordering::Relaxed) > 0;
+                    let transport_has_started =
+                        self.transport_len_samples.load(Ordering::Relaxed) > 0;
                     let state = self.loopers[id].shared_state.get();
 
                     match state {
@@ -756,7 +957,8 @@ impl AudioEngine {
                         LooperState::Armed => {
                             self.clear_looper(id);
                         }
-                        _ => { // Playing, Overdubbing, Stopped
+                        _ => {
+                            // Playing, Overdubbing, Stopped
                             if is_playing {
                                 self.handle_toggle_looper(id);
                             }
@@ -816,8 +1018,7 @@ impl AudioEngine {
                     slot_index,
                     audio_data,
                 } => {
-                    if let Some(SynthEngine::Sampler(s)) =
-                        self.synth.engines.get_mut(engine_index)
+                    if let Some(SynthEngine::Sampler(s)) = self.synth.engines.get_mut(engine_index)
                     {
                         s.load_sample_for_slot(slot_index, audio_data);
                     }
@@ -828,8 +1029,7 @@ impl AudioEngine {
                     global_fine_tune_cents,
                     fade_out,
                 } => {
-                    if let Some(SynthEngine::Sampler(s)) =
-                        self.synth.engines.get_mut(engine_index)
+                    if let Some(SynthEngine::Sampler(s)) = self.synth.engines.get_mut(engine_index)
                     {
                         s.set_sampler_settings(root_notes, global_fine_tune_cents, fade_out);
                     }
@@ -864,7 +1064,9 @@ impl AudioEngine {
                                             pad.volume = velocity as f32 / 127.0;
                                             pad.playhead = 0.0;
                                             pad.amp_adsr.note_on();
-                                            pad.gate_counter = (pad.fx.gate_close_time_ms / 1000.0 * self.sample_rate) as usize;
+                                            pad.gate_counter = (pad.fx.gate_close_time_ms / 1000.0
+                                                * self.sample_rate)
+                                                as usize;
                                             pad.was_gate_open = true;
                                             self.pad_event_producer.push(pad_index).ok();
                                             note_consumed_by_sampler = true;
@@ -872,10 +1074,13 @@ impl AudioEngine {
                                     }
                                 }
                             }
-                            if !note_consumed_by_sampler && self.synth_is_active.load(Ordering::Relaxed) {
+                            if !note_consumed_by_sampler
+                                && self.synth_is_active.load(Ordering::Relaxed)
+                            {
                                 self.synth.note_on(note, velocity);
                             }
-                        } else { // Note Off
+                        } else {
+                            // Note Off
                             if (48..=63).contains(&note) {
                                 let pad_index = (note - 48) as usize;
                                 if let Some(pad) = self.sampler_pads.get_mut(pad_index) {
@@ -929,7 +1134,8 @@ impl AudioEngine {
                         pad.fx = settings;
                         pad.amp_adsr.set_settings(settings.adsr);
                         let mapped_size = 0.5 + (settings.reverb_size * 0.5);
-                        pad.reverb.set_params(mapped_size, settings.reverb_decay, self.sample_rate);
+                        pad.reverb
+                            .set_params(mapped_size, settings.reverb_decay, self.sample_rate);
                     }
                 }
             }
@@ -966,7 +1172,9 @@ impl AudioEngine {
             return;
         }
 
-        looper.high_res_summary.reserve(audio.len() / HIGH_RES_CHUNK_SIZE + 1);
+        looper
+            .high_res_summary
+            .reserve(audio.len() / HIGH_RES_CHUNK_SIZE + 1);
         for chunk in audio.chunks(HIGH_RES_CHUNK_SIZE) {
             let peak = chunk.iter().fold(0.0f32, |max, &v| max.max(v.abs()));
             looper.high_res_summary.push(peak);
@@ -989,7 +1197,9 @@ impl AudioEngine {
             let start_sample = chunk_index * HIGH_RES_CHUNK_SIZE;
             let end_sample = (start_sample + HIGH_RES_CHUNK_SIZE).min(looper.audio.len());
 
-            if start_sample >= end_sample { continue; }
+            if start_sample >= end_sample {
+                continue;
+            }
 
             let audio_chunk = &looper.audio[start_sample..end_sample];
             let new_peak = audio_chunk.iter().fold(0.0f32, |max, &v| max.max(v.abs()));
@@ -1061,7 +1271,7 @@ impl AudioEngine {
         }
     }
 
-    pub fn process_buffer(&mut self, mic_buffer: &[f32]) -> Vec<f32> {
+    pub fn process_buffer(&mut self, mic_buffer: &mut [f32]) -> Vec<f32> {
         let start_time = Instant::now();
         let num_samples = mic_buffer.len();
         let mut output_buffer = vec![0.0; num_samples];
@@ -1086,6 +1296,14 @@ impl AudioEngine {
             self.engine_1_buffer.fill(0.0);
         }
 
+        // --- Apply Synth FX ---
+        if let Some(rack) = &mut self.synth_fx_racks[0] {
+            rack.process_buffer(&mut self.engine_0_buffer);
+        }
+        if let Some(rack) = &mut self.synth_fx_racks[1] {
+            rack.process_buffer(&mut self.engine_1_buffer);
+        }
+
         let mut engine_peak_buffers = [0.0f32; 2];
         let mut synth_master_peak_buffer = 0.0f32;
         let mut sampler_peak_buffer = 0.0f32;
@@ -1098,7 +1316,8 @@ impl AudioEngine {
             }
             LfoRateMode::Sync => {
                 if transport_len > 0 {
-                    let sync_rate = self.limiter_release_sync_rate.load(Ordering::Relaxed) as f32 / 1_000_000.0;
+                    let sync_rate =
+                        self.limiter_release_sync_rate.load(Ordering::Relaxed) as f32 / 1_000_000.0;
                     let release_samples = (transport_len as f32) / sync_rate;
                     (-(1.0 / release_samples)).exp()
                 } else {
@@ -1108,14 +1327,21 @@ impl AudioEngine {
             }
         };
 
+        // --- Apply Input FX ---
+        if let Some(rack) = &mut self.input_fx_rack {
+            rack.process_buffer(mic_buffer);
+        }
+
         let input_peak = mic_buffer.iter().fold(0.0f32, |max, &val| max.max(val.abs()));
-        self.input_peak_meter.store((input_peak * u32::MAX as f32) as u32, Ordering::Relaxed);
+        self.input_peak_meter
+            .store((input_peak * u32::MAX as f32) as u32, Ordering::Relaxed);
 
         let mixer_state = self.track_mixer_state.read().unwrap().clone();
         let is_any_soloed = mixer_state.tracks.iter().any(|t| t.is_soloed);
         let mut buffer_peaks = [0.0f32; NUM_LOOPERS];
 
-        let synth_master_vol_f32 = self.synth_master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
+        let synth_master_vol_f32 =
+            self.synth_master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
         let sampler_vol_f32 = self.sampler_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
 
         for i in 0..num_samples {
@@ -1140,7 +1366,9 @@ impl AudioEngine {
                                 looper.shared_state.set_playhead(0);
                             }
                             LooperState::Playing => looper.shared_state.set(LooperState::Overdubbing),
-                            LooperState::Overdubbing => looper.shared_state.set(LooperState::Playing),
+                            LooperState::Overdubbing => {
+                                looper.shared_state.set(LooperState::Playing)
+                            }
                             LooperState::Stopped => {
                                 looper.playhead = 0;
                                 looper.shared_state.set_playhead(0);
@@ -1157,7 +1385,9 @@ impl AudioEngine {
                 for (id, looper) in self.loopers.iter_mut().enumerate() {
                     if looper.stop_is_queued {
                         if looper.samples_since_high_res_update > 0 {
-                            looper.high_res_summary.push(looper.peak_since_high_res_update);
+                            looper
+                                .high_res_summary
+                                .push(looper.peak_since_high_res_update);
                             looper.peak_since_high_res_update = 0.0;
                             looper.samples_since_high_res_update = 0;
                         }
@@ -1167,7 +1397,9 @@ impl AudioEngine {
                             looper.audio.resize(final_len, 0.0);
                             looper.shared_state.set(LooperState::Playing);
                             looper.playhead = 0;
-                            looper.shared_state.set_length_in_cycles(looper.cycles_recorded);
+                            looper
+                                .shared_state
+                                .set_length_in_cycles(looper.cycles_recorded);
                             looper.shared_state.set_playhead(0);
                             loopers_to_regenerate.push(id);
                         } else {
@@ -1180,13 +1412,17 @@ impl AudioEngine {
                     self.regenerate_high_res_summary(id);
                     self.update_visual_summary(id);
                 }
-                for id in loopers_to_clear { self.clear_looper(id); }
+                for id in loopers_to_clear {
+                    self.clear_looper(id);
+                }
                 for looper in self.loopers.iter_mut() {
                     if looper.shared_state.get() == LooperState::Recording {
                         looper.cycles_recorded += 1;
                         if transport_len > 0 {
                             looper.audio.reserve(transport_len);
-                            looper.high_res_summary.reserve(transport_len / HIGH_RES_CHUNK_SIZE);
+                            looper
+                                .high_res_summary
+                                .reserve(transport_len / HIGH_RES_CHUNK_SIZE);
                         }
                     }
                 }
@@ -1207,7 +1443,9 @@ impl AudioEngine {
                     let mut new_len = looper.audio.len();
                     if new_len > 0 {
                         if looper.samples_since_high_res_update > 0 {
-                            looper.high_res_summary.push(looper.peak_since_high_res_update);
+                            looper
+                                .high_res_summary
+                                .push(looper.peak_since_high_res_update);
                             looper.peak_since_high_res_update = 0.0;
                             looper.samples_since_high_res_update = 0;
                         }
@@ -1302,7 +1540,8 @@ impl AudioEngine {
 
                                 // Only process the reverb's audio if the gate is currently open.
                                 if is_gate_open {
-                                    wet_sample = pad.reverb.process(amp_sample) * pad.fx.reverb_mix;
+                                    wet_sample =
+                                        pad.reverb.process(amp_sample) * pad.fx.reverb_mix;
                                 }
 
                                 // Store the current state for the next sample's comparison.
@@ -1319,25 +1558,37 @@ impl AudioEngine {
                     }
                 }
             }
-            sampler_peak_buffer = sampler_peak_buffer.max(raw_sampler_output.abs());
-            let final_sampler_output = raw_sampler_output * sampler_vol_f32;
 
             let vol0 = self.engine_volumes[0].load(Ordering::Relaxed) as f32 / 1_000_000.0;
             let vol1 = self.engine_volumes[1].load(Ordering::Relaxed) as f32 / 1_000_000.0;
-            let final_engine_outputs = [self.engine_0_buffer[i] * vol0, self.engine_1_buffer[i] * vol1];
+            let final_engine_outputs =
+                [self.engine_0_buffer[i] * vol0, self.engine_1_buffer[i] * vol1];
             engine_peak_buffers[0] = engine_peak_buffers[0].max(final_engine_outputs[0].abs());
             engine_peak_buffers[1] = engine_peak_buffers[1].max(final_engine_outputs[1].abs());
             let summed_engine_output = final_engine_outputs[0] + final_engine_outputs[1];
             synth_master_peak_buffer = synth_master_peak_buffer.max(summed_engine_output.abs());
             let final_synth_output = summed_engine_output * synth_master_vol_f32;
 
+            let mut final_sampler_output = raw_sampler_output;
+            if let Some(rack) = &mut self.sampler_fx_rack {
+                let mut buffer = [final_sampler_output];
+                rack.process_buffer(&mut buffer);
+                final_sampler_output = buffer[0];
+            }
+            sampler_peak_buffer = sampler_peak_buffer.max(final_sampler_output.abs());
+            final_sampler_output *= sampler_vol_f32;
+
             let mic_input = mic_buffer[i];
 
             let record_input = {
                 let mut total = 0.0;
-                if audio_input_is_armed { total += mic_input; }
+                if audio_input_is_armed {
+                    total += mic_input;
+                }
                 total += final_synth_output;
-                if sampler_is_active { total += final_sampler_output; }
+                if sampler_is_active {
+                    total += final_sampler_output;
+                }
                 total
             };
 
@@ -1346,7 +1597,10 @@ impl AudioEngine {
                 let state = looper.shared_state.get();
                 match state {
                     LooperState::Armed => {
-                        if self.transport_state == TransportState::Playing && transport_len == 0 && record_input.abs() > LOOPER_ARM_THRESHOLD {
+                        if self.transport_state == TransportState::Playing
+                            && transport_len == 0
+                            && record_input.abs() > LOOPER_ARM_THRESHOLD
+                        {
                             looper.shared_state.set(LooperState::Recording);
                             looper.cycles_recorded = 1;
                         }
@@ -1354,10 +1608,14 @@ impl AudioEngine {
                     LooperState::Recording => {
                         if self.transport_state == TransportState::Playing {
                             looper.audio.push(record_input);
-                            looper.peak_since_high_res_update = looper.peak_since_high_res_update.max(record_input.abs());
+                            looper.peak_since_high_res_update = looper
+                                .peak_since_high_res_update
+                                .max(record_input.abs());
                             looper.samples_since_high_res_update += 1;
                             if looper.samples_since_high_res_update >= HIGH_RES_CHUNK_SIZE {
-                                looper.high_res_summary.push(looper.peak_since_high_res_update);
+                                looper
+                                    .high_res_summary
+                                    .push(looper.peak_since_high_res_update);
                                 looper.peak_since_high_res_update = 0.0;
                                 looper.samples_since_high_res_update = 0;
                             }
@@ -1366,15 +1624,29 @@ impl AudioEngine {
                     }
                     LooperState::Playing | LooperState::Overdubbing => {
                         if !looper.audio.is_empty() {
-                            let sample_to_play = looper.audio[looper.playhead];
+                            let mut sample_to_play = looper.audio[looper.playhead];
+                            if let Some(rack) = &mut self.looper_fx_racks[id] {
+                                let mut buffer = [sample_to_play];
+                                rack.process_buffer(&mut buffer);
+                                sample_to_play = buffer[0];
+                            }
+
                             buffer_peaks[id] = buffer_peaks[id].max(sample_to_play.abs());
                             let track_state = &mixer_state.tracks[id];
-                            let is_audible = if is_any_soloed { track_state.is_soloed } else { !track_state.is_muted };
+                            let is_audible = if is_any_soloed {
+                                track_state.is_soloed
+                            } else {
+                                !track_state.is_muted
+                            };
                             if self.transport_state == TransportState::Playing && is_audible {
                                 looper_output += sample_to_play * track_state.volume;
                             }
-                            if state == LooperState::Overdubbing && self.transport_state == TransportState::Playing {
-                                looper.audio[looper.playhead] = (sample_to_play + record_input).clamp(-1.0, 1.0);
+                            if state == LooperState::Overdubbing
+                                && self.transport_state == TransportState::Playing
+                            {
+                                looper.audio[looper.playhead] =
+                                    (looper.audio[looper.playhead] + record_input)
+                                        .clamp(-1.0, 1.0);
                                 let chunk_index = looper.playhead / HIGH_RES_CHUNK_SIZE;
                                 looper.dirty_summary_chunks.insert(chunk_index);
                                 looper.samples_since_visual_update += 1;
@@ -1389,16 +1661,33 @@ impl AudioEngine {
                 }
             }
 
-            let live_sampler_output = if sampler_is_active { final_sampler_output } else { 0.0 };
-            let monitored_input = if audio_input_is_monitored { mic_input } else { 0.0 };
+            let live_sampler_output = if sampler_is_active {
+                final_sampler_output
+            } else {
+                0.0
+            };
+            let monitored_input = if audio_input_is_monitored {
+                mic_input
+            } else {
+                0.0
+            };
 
-            let pre_master_mix = looper_output + final_synth_output + live_sampler_output + monitored_input;
+            let mut pre_master_mix =
+                looper_output + final_synth_output + live_sampler_output + monitored_input;
+
+            if let Some(rack) = &mut self.master_fx_rack {
+                let mut buffer = [pre_master_mix];
+                rack.process_buffer(&mut buffer);
+                pre_master_mix = buffer[0];
+            }
+
             master_peak_buffer = master_peak_buffer.max(pre_master_mix.abs());
             let master_vol = self.master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
             let final_mix = pre_master_mix * master_vol;
 
             if self.limiter_is_active.load(Ordering::Relaxed) {
-                let threshold = self.limiter_threshold.load(Ordering::Relaxed) as f32 / 1_000_000.0;
+                let threshold =
+                    self.limiter_threshold.load(Ordering::Relaxed) as f32 / 1_000_000.0;
                 output_buffer[i] = self.limiter.process(final_mix, threshold, release_coeffs);
             } else {
                 self.limiter.gain_reduction_db.store(0, Ordering::Relaxed);
@@ -1425,27 +1714,48 @@ impl AudioEngine {
             rec_buffer.extend_from_slice(&output_buffer);
         }
         for i in 0..2 {
-            self.engine_peak_meters[i].store((engine_peak_buffers[i].clamp(0.0, 1.0) * u32::MAX as f32) as u32, Ordering::Relaxed);
+            self.engine_peak_meters[i].store(
+                (engine_peak_buffers[i].clamp(0.0, 1.0) * u32::MAX as f32) as u32,
+                Ordering::Relaxed,
+            );
         }
-        self.transport_playhead.store(transport_playhead, Ordering::Relaxed);
+        self.transport_playhead
+            .store(transport_playhead, Ordering::Relaxed);
         self.playing_pads.store(playing_mask, Ordering::Relaxed);
-        self.synth_master_peak_meter.store((synth_master_peak_buffer * u32::MAX as f32) as u32, Ordering::Relaxed);
-        self.sampler_peak_meter.store((sampler_peak_buffer * u32::MAX as f32) as u32, Ordering::Relaxed);
-        self.master_peak_meter.store((master_peak_buffer * u32::MAX as f32) as u32, Ordering::Relaxed);
+        self.synth_master_peak_meter.store(
+            (synth_master_peak_buffer * u32::MAX as f32) as u32,
+            Ordering::Relaxed,
+        );
+        self.sampler_peak_meter.store(
+            (sampler_peak_buffer * u32::MAX as f32) as u32,
+            Ordering::Relaxed,
+        );
+        self.master_peak_meter.store(
+            (master_peak_buffer * u32::MAX as f32) as u32,
+            Ordering::Relaxed,
+        );
         for i in 0..NUM_LOOPERS {
-            self.peak_meters[i].store((buffer_peaks[i].clamp(0.0, 1.0) * u32::MAX as f32) as u32, Ordering::Relaxed);
+            self.peak_meters[i].store(
+                (buffer_peaks[i].clamp(0.0, 1.0) * u32::MAX as f32) as u32,
+                Ordering::Relaxed,
+            );
         }
         let elapsed = start_time.elapsed();
         if num_samples > 0 {
             let buffer_duration_seconds = num_samples as f32 / self.sample_rate;
             let load_ratio = elapsed.as_secs_f32() / buffer_duration_seconds;
-            self.cpu_load.store((load_ratio * 1000.0) as u32, Ordering::Relaxed);
+            self.cpu_load
+                .store((load_ratio * 1000.0) as u32, Ordering::Relaxed);
         }
 
         output_buffer
     }
 
-    fn load_and_resample_wav_for_session(path: &Path, source_sr: f32, target_sr: f32) -> Result<Vec<f32>> {
+    fn load_and_resample_wav_for_session(
+        path: &Path,
+        source_sr: f32,
+        target_sr: f32,
+    ) -> Result<Vec<f32>> {
         let file = BufReader::new(File::open(path)?);
         let reader = hound::WavReader::new(file)?;
         let spec = reader.spec();

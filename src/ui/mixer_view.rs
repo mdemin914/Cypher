@@ -1,5 +1,6 @@
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
+use crate::fx;
 use crate::looper::NUM_LOOPERS;
 use crate::synth::LfoRateMode;
 use egui::{
@@ -195,6 +196,14 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
         );
         ui.add_space(4.0);
 
+        // --- FX Button ---
+        let fx_button = egui::Button::new("FX").fill(app.theme.mixer.mute_off_bg);
+        if ui.add(fx_button).clicked() {
+            app.active_fx_target = Some(fx::InsertionPoint::Looper(track_id));
+            app.fx_editor_window_open = true;
+        }
+        ui.add_space(2.0);
+
         // --- Mute/Solo Buttons ---
         ui.horizontal(|ui| {
             let spacing = ui.style().spacing.item_spacing.x;
@@ -263,6 +272,14 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.label(RichText::new("Master").color(app.theme.mixer.label_color));
         ui.add_space(4.0);
+
+        // --- Master FX Button ---
+        let fx_button = egui::Button::new("FX").fill(app.theme.mixer.mute_off_bg);
+        if ui.add(fx_button).clicked() {
+            app.active_fx_target = Some(fx::InsertionPoint::Master);
+            app.fx_editor_window_open = true;
+        }
+        ui.add_space(2.0);
 
         match app.limiter_release_mode {
             LfoRateMode::Hz => {

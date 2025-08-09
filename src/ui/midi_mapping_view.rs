@@ -1,7 +1,9 @@
 // src/ui/midi_mapping_view.rs
+
 use crate::app::CypherApp;
+use crate::fx;
 use crate::looper::NUM_LOOPERS;
-use crate::settings::{ControllableParameter, MidiControlId};
+use crate::settings::{ControllableParameter, FullMidiControlId, FxParamIdentifier, FxParamName};
 use egui::{Button, CentralPanel, Frame, RichText, ScrollArea, TopBottomPanel, Ui, Window};
 use std::collections::BTreeMap;
 
@@ -23,8 +25,13 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                 .show_inside(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         if let Ok(last_cc) = app.last_midi_cc_message.read() {
-                            let text = if let Some((id, _)) = *last_cc {
-                                format!("Last received: Chan {} - CC {}", id.channel + 1, id.cc)
+                            let text = if let Some((id, _)) = &*last_cc {
+                                format!(
+                                    "Last received: '{}' - Chan {} - CC {}",
+                                    id.port_name,
+                                    id.channel + 1,
+                                    id.cc
+                                )
                             } else {
                                 "Move a control on your MIDI device to see it here.".to_string()
                             };
@@ -55,7 +62,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                 // Create a reverse mapping for efficient lookup
                 let mappings = app.midi_mappings.read().unwrap();
                 let reverse_lookup: BTreeMap<_, _> =
-                    mappings.iter().map(|(k, v)| (*v, *k)).collect();
+                    mappings.iter().map(|(k, v)| (*v, k.clone())).collect();
                 drop(mappings);
 
                 ScrollArea::vertical().show(ui, |ui| {
@@ -167,16 +174,38 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
                             });
                         }
                     });
+
+                    // --- FX Section ---
+                    ui.collapsing(RichText::new("FX Racks").strong().color(theme.label_color), |ui| {
+                        let all_insertion_points = [
+                            (0..NUM_LOOPERS).map(fx::InsertionPoint::Looper).collect::<Vec<_>>(),
+                            (0..2).map(fx::InsertionPoint::Synth).collect::<Vec<_>>(),
+                            vec![
+                                fx::InsertionPoint::Sampler,
+                                fx::InsertionPoint::Input,
+                                fx::InsertionPoint::Master,
+                            ],
+                        ].concat();
+
+                        for (point_idx, point) in all_insertion_points.iter().enumerate() {
+                            let wet_dry_param = ControllableParameter::Fx(FxParamIdentifier {
+                                point: *point,
+                                component_index: usize::MAX, // Special index for wet/dry
+                                param_name: FxParamName::WetDry
+                            });
+                            let row_color = if point_idx % 2 == 0 { theme.row_even_bg } else { theme.row_odd_bg };
+                            Frame::new().fill(row_color).show(ui, |ui| {
+                                draw_mapping_row(ui, wet_dry_param, &reverse_lookup, app);
+                            });
+                        }
+                    });
                 });
             });
         });
 
-    // Update the app's state based on UI interaction.
     if should_close_by_button {
-        // Our "Close" button was clicked.
         app.midi_mapping_window_open = false;
     } else {
-        // Handle the native 'X' button. This does NOT save.
         app.midi_mapping_window_open = is_open;
     }
 }
@@ -185,7 +214,7 @@ pub fn draw_midi_mapping_window(app: &mut CypherApp, ctx: &egui::Context) {
 fn draw_mapping_row(
     ui: &mut Ui,
     param: ControllableParameter,
-    reverse_lookup: &BTreeMap<ControllableParameter, MidiControlId>,
+    reverse_lookup: &BTreeMap<ControllableParameter, FullMidiControlId>,
     app: &mut CypherApp,
 ) {
     let theme = &app.theme.midi_mapping_window;
@@ -196,7 +225,12 @@ fn draw_mapping_row(
 
         // --- Column 2: Assigned Control ---
         let assignment_text = if let Some(control_id) = reverse_lookup.get(&param) {
-            format!("Chan {} - CC {}", control_id.channel + 1, control_id.cc)
+            let device_str = if control_id.port_name.is_empty() {
+                "[Any Device]".to_string()
+            } else {
+                format!("'{}'", control_id.port_name)
+            };
+            format!("{} - Chan {} - CC {}", device_str, control_id.channel + 1, control_id.cc)
         } else {
             "Unassigned".to_string()
         };
