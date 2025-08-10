@@ -37,6 +37,8 @@ pub struct SharedLooperState {
     length_in_cycles: Arc<AtomicU32>,
     playhead: Arc<AtomicUsize>,
     waveform_summary: Arc<RwLock<Vec<f32>>>,
+    stop_is_queued: Arc<AtomicU8>,
+    pending_command: Arc<AtomicU8>,
 }
 
 impl SharedLooperState {
@@ -46,6 +48,8 @@ impl SharedLooperState {
             length_in_cycles: Arc::new(AtomicU32::new(0)),
             playhead: Arc::new(AtomicUsize::new(0)),
             waveform_summary: Arc::new(RwLock::new(Vec::new())),
+            stop_is_queued: Arc::new(AtomicU8::new(0)),
+            pending_command: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -76,5 +80,21 @@ impl SharedLooperState {
 
     pub fn get_waveform_summary(&self) -> Arc<RwLock<Vec<f32>>> {
         self.waveform_summary.clone()
+    }
+
+    pub fn get_stop_is_queued(&self) -> bool {
+        self.stop_is_queued.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn set_stop_is_queued(&self, queued: bool) {
+        self.stop_is_queued.store(if queued { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    pub fn get_pending_command(&self) -> bool {
+        self.pending_command.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn set_pending_command(&self, pending: bool) {
+        self.pending_command.store(if pending { 1 } else { 0 }, Ordering::Relaxed);
     }
 }

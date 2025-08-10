@@ -218,6 +218,7 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
             let waveform_summary = app.looper_states[id].get_waveform_summary();
             let (main_response, clear_response) = draw_looper_button(
                 ui,
+                app,
                 id,
                 state,
                 progress,
@@ -272,6 +273,7 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
 
 fn draw_looper_button(
     ui: &mut Ui,
+    app: &CypherApp,
     id: usize,
     state: LooperState,
     progress: f32,
@@ -373,6 +375,22 @@ fn draw_looper_button(
                 theme.loopers.text_color,
             );
             clear_response = Some(resp);
+        }
+
+        // Draw armed indicator (circle in top right corner)
+        let indicator_radius = 8.0;
+        let indicator_pos = egui::pos2(rect.max.x - indicator_radius - 4.0, rect.min.y + indicator_radius + 4.0);
+        
+        let stop_is_queued = app.looper_states[id].get_stop_is_queued();
+        let pending_command = app.looper_states[id].get_pending_command();
+        let should_show_red = stop_is_queued || (pending_command && state == LooperState::Recording);
+        
+        if should_show_red {
+            ui.painter().add(Shape::circle_filled(
+                indicator_pos,
+                indicator_radius,
+                Color32::RED,
+            ));
         }
 
         let id_color = theme.loopers.track_colors[id];

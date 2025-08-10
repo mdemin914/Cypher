@@ -1152,6 +1152,7 @@ impl AudioEngine {
             looper.shared_state.set(LooperState::Playing);
         } else {
             looper.pending_command = true;
+            looper.shared_state.set_pending_command(true);
             if current_state == LooperState::Empty {
                 looper.shared_state.set(LooperState::Armed);
             }
@@ -1251,6 +1252,7 @@ impl AudioEngine {
         looper.playhead = 0;
         looper.pending_command = false;
         looper.stop_is_queued = false;
+        looper.shared_state.set_stop_is_queued(false);
         looper.cycles_recorded = 0;
 
         looper.high_res_summary.clear();
@@ -1354,13 +1356,17 @@ impl AudioEngine {
                     if looper.pending_command {
                         let current_state = looper.shared_state.get();
                         match current_state {
-                            LooperState::Recording => looper.stop_is_queued = true,
+                            LooperState::Recording => {
+                                looper.stop_is_queued = true;
+                                looper.shared_state.set_stop_is_queued(true);
+                            }
                             LooperState::Empty | LooperState::Armed => {
                                 looper.audio.clear();
                                 looper.playhead = 0;
                                 looper.cycles_recorded = 0;
                                 looper.high_res_summary.clear();
                                 looper.stop_is_queued = false;
+                                looper.shared_state.set_stop_is_queued(false);
                                 looper.shared_state.set(LooperState::Recording);
                                 looper.shared_state.set_length_in_cycles(0);
                                 looper.shared_state.set_playhead(0);
@@ -1376,6 +1382,7 @@ impl AudioEngine {
                             }
                         }
                         looper.pending_command = false;
+                        looper.shared_state.set_pending_command(false);
                     }
                     if was_overdubbing {
                         loopers_to_regenerate.push(id);
@@ -1406,6 +1413,7 @@ impl AudioEngine {
                             loopers_to_clear.push(id);
                         }
                         looper.stop_is_queued = false;
+                        looper.shared_state.set_stop_is_queued(false);
                     }
                 }
                 for id in loopers_to_regenerate {
@@ -1464,6 +1472,7 @@ impl AudioEngine {
                         looper.shared_state.set_length_in_cycles(1);
                         looper.shared_state.set_playhead(0);
                         looper.pending_command = false;
+                        looper.shared_state.set_pending_command(false);
                         self.regenerate_high_res_summary(id);
                         self.update_visual_summary(id);
                     }

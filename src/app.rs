@@ -424,7 +424,7 @@ impl CypherApp {
             command_sender: None,
             midi_timer_should_exit: Arc::new(AtomicBool::new(false)),
             pad_event_consumer: consumer,
-            looper_states: Vec::new(),
+            looper_states: (0..NUM_LOOPERS).map(|_| SharedLooperState::new()).collect(),
             transport_playhead: Arc::new(AtomicUsize::new(0)),
             transport_len_samples: Arc::new(AtomicUsize::new(0)),
             transport_is_playing: Arc::new(AtomicBool::new(true)),
