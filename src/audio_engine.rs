@@ -377,6 +377,8 @@ pub struct MidiMessage {
 pub enum AudioCommand {
     LooperPress(usize),
     ClearLooper(usize),
+    StartLooper(usize),
+    StopLooper(usize),
     MidiMessage(MidiMessage),
     ActivateSynth,
     DeactivateSynth,
@@ -464,6 +466,10 @@ pub enum AudioCommand {
     // The FxPreset now contains the `FxChainLink`s with atomic `ComponentParams`.
     LoadFxRack(fx::InsertionPoint, fx::FxPreset),
     ClearFxRack(fx::InsertionPoint),
+    
+    // --- Metronome Commands ---
+    ToggleMetronome,
+    SetMetronomeBpm(u32),
 }
 
 pub struct AudioEngine {
@@ -517,6 +523,14 @@ pub struct AudioEngine {
     sampler_fx_rack: Option<FxRack>,
     input_fx_rack: Option<FxRack>,
     master_fx_rack: Option<FxRack>,
+    
+    // --- Metronome State ---
+    metronome_is_active: Arc<AtomicBool>,
+    metronome_bpm: Arc<AtomicU32>,
+    metronome_click_buffer: Vec<f32>,
+    metronome_click_playhead: usize,
+    metronome_samples_per_beat: usize,
+    metronome_playhead: usize, // Independent playhead for metronome timing
 }
 
 fn write_wav_file(path: &Path, audio_buffer: &[f32], sample_rate: f32) -> Result<()> {
@@ -633,6 +647,8 @@ impl AudioEngine {
         _should_clear_all: Arc<AtomicBool>, // This is now only used on the UI thread
         midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
         fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, Arc<AtomicU32>>, // Added
+        metronome_is_active: Arc<AtomicBool>,
+        metronome_bpm: Arc<AtomicU32>,
     ) -> (Self, Vec<SharedLooperState>) {
         let looper_states: Vec<SharedLooperState> =
             (0..NUM_LOOPERS).map(|_| SharedLooperState::new()).collect();
@@ -697,9 +713,37 @@ impl AudioEngine {
             sampler_fx_rack: None,
             input_fx_rack: None,
             master_fx_rack: None,
+            metronome_is_active,
+            metronome_bpm,
+            metronome_click_buffer: Self::generate_click_sound(sample_rate),
+            metronome_click_playhead: 0,
+            metronome_samples_per_beat: Self::calculate_samples_per_beat(sample_rate, 120),
+            metronome_playhead: 0,
         };
 
         (engine, looper_states)
+    }
+    
+    fn generate_click_sound(sample_rate: f32) -> Vec<f32> {
+        let click_duration_ms = 50.0;
+        let click_samples = (sample_rate * click_duration_ms / 1000.0) as usize;
+        let mut click_buffer = vec![0.0; click_samples];
+        
+        // Generate a simple click sound (sine wave with envelope)
+        let frequency = 1000.0; // 1kHz click
+        for (i, sample) in click_buffer.iter_mut().enumerate() {
+            let t = i as f32 / sample_rate;
+            let envelope = (-t * 10.0).exp(); // Exponential decay
+            *sample = (2.0 * std::f32::consts::PI * frequency * t).sin() * envelope * 0.3;
+        }
+        
+        click_buffer
+    }
+    
+    fn calculate_samples_per_beat(sample_rate: f32, bpm: u32) -> usize {
+        let beats_per_second = bpm as f32 / 60.0;
+        let samples_per_beat = sample_rate / beats_per_second;
+        samples_per_beat as usize
     }
 
     pub fn handle_commands(&mut self) {
@@ -857,6 +901,7 @@ impl AudioEngine {
                                 looper.audio = audio_data;
                                 looper.playhead = 0;
                                 looper.shared_state.set(LooperState::Playing);
+                                looper.shared_state.set_is_playing(true);
                                 looper.shared_state.set_length_in_cycles(1);
                                 self.regenerate_high_res_summary(looper_index);
                                 self.update_visual_summary(looper_index);
@@ -966,6 +1011,49 @@ impl AudioEngine {
                     }
                 }
                 AudioCommand::ClearLooper(id) => self.clear_looper(id),
+                AudioCommand::StartLooper(id) => {
+                    // Ignore start/stop commands for the first looper (main transport)
+                    if id == 0 {
+                        return;
+                    }
+                    let looper = &mut self.loopers[id];
+                    let current_state = looper.shared_state.get();
+                    match current_state {
+                        LooperState::Empty => {
+                            // Queue to start recording on next transport cycle
+                            looper.shared_state.set(LooperState::Armed);
+                            looper.pending_command = true;
+                            looper.shared_state.set_pending_command(true);
+                        }
+                        LooperState::Stopped => {
+                            // Queue to start playing on next transport cycle
+                            looper.pending_command = true;
+                            looper.shared_state.set_pending_command(true);
+                        }
+                        _ => {} // Already playing or recording
+                    }
+                }
+                AudioCommand::StopLooper(id) => {
+                    // Ignore start/stop commands for the first looper (main transport)
+                    if id == 0 {
+                        return;
+                    }
+                    let looper = &mut self.loopers[id];
+                    let current_state = looper.shared_state.get();
+                    match current_state {
+                        LooperState::Playing => {
+                            // Queue to stop playing on next transport cycle
+                            looper.pending_command = true;
+                            looper.shared_state.set_pending_command(true);
+                        }
+                        LooperState::Recording => {
+                            // Queue to stop recording on next transport cycle
+                            looper.stop_is_queued = true;
+                            looper.shared_state.set_stop_is_queued(true);
+                        }
+                        _ => {} // Already stopped or in other states
+                    }
+                }
                 AudioCommand::SetMasterVolume(vol) => self
                     .master_volume
                     .store((vol * 1_000_000.0) as u32, Ordering::Relaxed),
@@ -1138,6 +1226,20 @@ impl AudioEngine {
                             .set_params(mapped_size, settings.reverb_decay, self.sample_rate);
                     }
                 }
+                AudioCommand::ToggleMetronome => {
+                    let is_active = self.metronome_is_active.load(Ordering::Relaxed);
+                    self.metronome_is_active.store(!is_active, Ordering::Relaxed);
+                    // Reset metronome playhead when toggling on to start from a clean beat
+                    if !is_active {
+                        self.metronome_playhead = 0;
+                    }
+                }
+                AudioCommand::SetMetronomeBpm(bpm) => {
+                    self.metronome_bpm.store(bpm, Ordering::Relaxed);
+                    self.metronome_samples_per_beat = Self::calculate_samples_per_beat(self.sample_rate, bpm);
+                    // Reset metronome playhead to keep timing consistent
+                    self.metronome_playhead = 0;
+                }
             }
         }
     }
@@ -1150,6 +1252,7 @@ impl AudioEngine {
             looper.shared_state.set(LooperState::Overdubbing);
         } else if current_state == LooperState::Overdubbing {
             looper.shared_state.set(LooperState::Playing);
+            looper.shared_state.set_is_playing(true);
         } else {
             looper.pending_command = true;
             looper.shared_state.set_pending_command(true);
@@ -1264,6 +1367,7 @@ impl AudioEngine {
         looper.shared_state.set(LooperState::Empty);
         looper.shared_state.set_length_in_cycles(0);
         looper.shared_state.set_playhead(0);
+        looper.shared_state.set_is_playing(false);
 
         self.update_visual_summary(id);
 
@@ -1371,14 +1475,20 @@ impl AudioEngine {
                                 looper.shared_state.set_length_in_cycles(0);
                                 looper.shared_state.set_playhead(0);
                             }
-                            LooperState::Playing => looper.shared_state.set(LooperState::Overdubbing),
+                            LooperState::Playing => {
+                                // Stop playing - set to stopped state
+                                looper.shared_state.set(LooperState::Stopped);
+                                looper.shared_state.set_is_playing(false);
+                            }
                             LooperState::Overdubbing => {
-                                looper.shared_state.set(LooperState::Playing)
+                                looper.shared_state.set(LooperState::Playing);
                             }
                             LooperState::Stopped => {
+                                // Start playing from stopped state
                                 looper.playhead = 0;
                                 looper.shared_state.set_playhead(0);
                                 looper.shared_state.set(LooperState::Playing);
+                                looper.shared_state.set_is_playing(true);
                             }
                         }
                         looper.pending_command = false;
@@ -1403,6 +1513,7 @@ impl AudioEngine {
                         if final_len > 0 {
                             looper.audio.resize(final_len, 0.0);
                             looper.shared_state.set(LooperState::Playing);
+                            looper.shared_state.set_is_playing(true);
                             looper.playhead = 0;
                             looper
                                 .shared_state
@@ -1467,6 +1578,7 @@ impl AudioEngine {
                         self.transport_len_samples.store(new_len, Ordering::Relaxed);
                         transport_len = new_len;
                         looper.shared_state.set(LooperState::Playing);
+                        looper.shared_state.set_is_playing(true);
                         looper.playhead = 0;
                         looper.cycles_recorded = 1;
                         looper.shared_state.set_length_in_cycles(1);
@@ -1705,6 +1817,23 @@ impl AudioEngine {
 
             if transport_len > 0 && self.transport_state == TransportState::Playing {
                 transport_playhead = (transport_playhead + 1) % transport_len;
+            }
+            
+            // --- Metronome Processing ---
+            if self.metronome_is_active.load(Ordering::Relaxed) {
+                // Check if we should trigger a click using independent metronome playhead
+                if self.metronome_playhead % self.metronome_samples_per_beat == 0 {
+                    self.metronome_click_playhead = 0;
+                }
+                
+                // Add click sound if we're currently playing a click
+                if self.metronome_click_playhead < self.metronome_click_buffer.len() {
+                    output_buffer[i] += self.metronome_click_buffer[self.metronome_click_playhead] * 0.5;
+                    self.metronome_click_playhead += 1;
+                }
+                
+                // Increment metronome playhead independently
+                self.metronome_playhead += 1;
             }
         }
 

@@ -39,6 +39,7 @@ pub struct SharedLooperState {
     waveform_summary: Arc<RwLock<Vec<f32>>>,
     stop_is_queued: Arc<AtomicU8>,
     pending_command: Arc<AtomicU8>,
+    is_playing: Arc<AtomicU8>,
 }
 
 impl SharedLooperState {
@@ -50,6 +51,7 @@ impl SharedLooperState {
             waveform_summary: Arc::new(RwLock::new(Vec::new())),
             stop_is_queued: Arc::new(AtomicU8::new(0)),
             pending_command: Arc::new(AtomicU8::new(0)),
+            is_playing: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -96,5 +98,13 @@ impl SharedLooperState {
 
     pub fn set_pending_command(&self, pending: bool) {
         self.pending_command.store(if pending { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    pub fn get_is_playing(&self) -> bool {
+        self.is_playing.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn set_is_playing(&self, playing: bool) {
+        self.is_playing.store(if playing { 1 } else { 0 }, Ordering::Relaxed);
     }
 }

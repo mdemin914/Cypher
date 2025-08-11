@@ -109,6 +109,31 @@ pub fn draw_main_view(app: &mut CypherApp, ctx: &egui::Context) {
                         .monospace()
                         .color(app.theme.top_bar.text_color),
                 );
+                
+                // Metronome controls
+                ui.separator();
+                
+                let is_active = app.metronome_is_active.load(Ordering::Relaxed);
+                let button_text = if is_active { "● MET" } else { "○ MET" };
+                let button_color = if is_active {
+                    app.theme.top_bar.button_bg
+                } else {
+                    app.theme.top_bar.button_bg
+                };
+                let metronome_button = Button::new(RichText::new(button_text).monospace()).fill(button_color);
+                if ui.add(metronome_button).clicked() {
+                    app.send_command(AudioCommand::ToggleMetronome);
+                }
+                
+                // BPM input for metronome
+                let mut bpm = app.metronome_bpm.load(Ordering::Relaxed);
+                let bpm_response = ui.add(egui::DragValue::new(&mut bpm)
+                    .range(40..=200)
+                    .speed(1.0)
+                    .suffix(" BPM"));
+                if bpm_response.changed() {
+                    app.send_command(AudioCommand::SetMetronomeBpm(bpm));
+                }
 
                 ui.separator();
 
@@ -216,7 +241,7 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
             };
 
             let waveform_summary = app.looper_states[id].get_waveform_summary();
-            let (main_response, clear_response) = draw_looper_button(
+            let (main_response, clear_response, start_stop_response) = draw_looper_button(
                 ui,
                 app,
                 id,
@@ -267,6 +292,34 @@ fn draw_looper_grid(app: &mut CypherApp, ui: &mut Ui) {
                     ui.memory_mut(|m| m.data.insert_temp(clear_button_id, false));
                 }
             }
+
+            if let Some(start_stop_resp) = start_stop_response {
+                let start_stop_button_id = start_stop_resp.id;
+                if start_stop_resp.is_pointer_button_down_on() {
+                    let was_already_pressed = ui.memory_mut(|m| {
+                        let already_pressed =
+                            m.data.get_temp_mut_or_default::<bool>(start_stop_button_id);
+                        if *already_pressed {
+                            true
+                        } else {
+                            *already_pressed = true;
+                            false
+                        }
+                    });
+                    if !was_already_pressed && id != 0 {
+                        let is_playing = app.looper_states[id].get_is_playing();
+                        // Set button press state to true when clicked
+                        app.looper_start_stop_button_pressed[id].store(true, Ordering::Relaxed);
+                        if is_playing {
+                            app.send_command(AudioCommand::StopLooper(id));
+                        } else {
+                            app.send_command(AudioCommand::StartLooper(id));
+                        }
+                    }
+                } else {
+                    ui.memory_mut(|m| m.data.insert_temp(start_stop_button_id, false));
+                }
+            }
         }
     });
 }
@@ -280,9 +333,10 @@ fn draw_looper_button(
     size: Vec2,
     theme: &crate::theme::Theme,
     waveform_summary: Arc<std::sync::RwLock<Vec<f32>>>,
-) -> (egui::Response, Option<egui::Response>) {
+) -> (egui::Response, Option<egui::Response>, Option<egui::Response>) {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let mut clear_response = None;
+    let mut start_stop_response = None;
 
     if ui.is_rect_visible(rect) {
         let center = rect.center();
@@ -377,6 +431,90 @@ fn draw_looper_button(
             clear_response = Some(resp);
         }
 
+        // Draw start/stop button (bottom right corner) - not for first looper (main transport)
+        if state != LooperState::Empty && id != 0 {
+            let is_playing = app.looper_states[id].get_is_playing();
+            let button_pressed = app.looper_start_stop_button_pressed[id].load(Ordering::Relaxed);
+            let previous_playing = app.looper_previous_playing_state[id].load(Ordering::Relaxed);
+            
+            // Reset button press state when looper state changes
+            if button_pressed && is_playing != previous_playing {
+                app.looper_start_stop_button_pressed[id].store(false, Ordering::Relaxed);
+            }
+            
+            // Update previous playing state
+            app.looper_previous_playing_state[id].store(is_playing, Ordering::Relaxed);
+            
+            // Only show the button when playing (for Stop) or when not playing (for Start)
+            if is_playing {
+                // Show Stop button when playing
+                let button_size = vec2(80.0, 30.0);
+                let start_stop_button_rect = Rect::from_min_size(
+                    rect.max - vec2(button_size.x + 4.0, button_size.y + 4.0),
+                    button_size,
+                );
+                let resp = ui.interact(start_stop_button_rect, Id::new(("start_stop", id)), Sense::click());
+                let start_stop_visuals = ui.style().interact(&resp);
+                
+                                    // Visual feedback when button is pressed
+                    let button_bg = if button_pressed || resp.is_pointer_button_down_on() {
+                        Color32::from_gray(100) // Darker when pressed
+                    } else {
+                        Color32::TRANSPARENT // Transparent when not pressed
+                    };
+                
+                ui.painter().rect(
+                    start_stop_button_rect,
+                    start_stop_visuals.corner_radius,
+                    button_bg,
+                    start_stop_visuals.bg_stroke,
+                    epaint::StrokeKind::Inside,
+                );
+                
+                ui.painter().text(
+                    start_stop_button_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Stop",
+                    egui::FontId::monospace(14.0),
+                    theme.loopers.text_color,
+                );
+                start_stop_response = Some(resp);
+            } else {
+                // Show Start button when not playing
+                let button_size = vec2(80.0, 30.0);
+                let start_stop_button_rect = Rect::from_min_size(
+                    rect.max - vec2(button_size.x + 4.0, button_size.y + 4.0),
+                    button_size,
+                );
+                let resp = ui.interact(start_stop_button_rect, Id::new(("start_stop", id)), Sense::click());
+                let start_stop_visuals = ui.style().interact(&resp);
+                
+                                 // Visual feedback when button is pressed
+                 let button_bg = if button_pressed || resp.is_pointer_button_down_on() {
+                     Color32::from_gray(100) // Darker when pressed
+                 } else {
+                     Color32::TRANSPARENT // Transparent when not pressed
+                 };
+                
+                ui.painter().rect(
+                    start_stop_button_rect,
+                    start_stop_visuals.corner_radius,
+                    button_bg,
+                    start_stop_visuals.bg_stroke,
+                    epaint::StrokeKind::Inside,
+                );
+                
+                ui.painter().text(
+                    start_stop_button_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Start",
+                    egui::FontId::monospace(14.0),
+                    theme.loopers.text_color,
+                );
+                start_stop_response = Some(resp);
+            }
+        }
+
         // Draw armed indicator (circle in top right corner)
         let indicator_radius = 8.0;
         let indicator_pos = egui::pos2(rect.max.x - indicator_radius - 4.0, rect.min.y + indicator_radius + 4.0);
@@ -402,7 +540,7 @@ fn draw_looper_button(
         let id_pos = center - id_galley.size() / 2.0;
         ui.painter().galley(id_pos, id_galley, id_color);
     }
-    (response, clear_response)
+    (response, clear_response, start_stop_response)
 }
 
 fn draw_synth_panel(app: &mut CypherApp, ui: &mut Ui) {
@@ -702,4 +840,4 @@ fn draw_transport_panel(app: &mut CypherApp, ui: &mut Ui) {
             });
         });
     });
-}
+}git s

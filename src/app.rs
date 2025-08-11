@@ -282,6 +282,14 @@ pub struct CypherApp {
     pub active_sample_rate: u32,
     pub active_buffer_size: u32,
     pub audio_settings_status: Option<(String, Color32)>,
+    
+    // --- Metronome State ---
+    pub metronome_is_active: Arc<AtomicBool>,
+    pub metronome_bpm: Arc<AtomicU32>,
+    
+    // --- Looper Button Press State ---
+    pub looper_start_stop_button_pressed: [AtomicBool; NUM_LOOPERS],
+    pub looper_previous_playing_state: [AtomicBool; NUM_LOOPERS],
 }
 
 /// Helper struct to hold audio data and its original sample rate.
@@ -499,6 +507,10 @@ impl CypherApp {
             active_sample_rate: 0,
             active_buffer_size: 0,
             audio_settings_status: None,
+            metronome_is_active: Arc::new(AtomicBool::new(false)),
+            metronome_bpm: Arc::new(AtomicU32::new(120)),
+            looper_start_stop_button_pressed: std::array::from_fn(|_| AtomicBool::new(false)),
+            looper_previous_playing_state: std::array::from_fn(|_| AtomicBool::new(false)),
             settings,
         };
 
@@ -1007,6 +1019,8 @@ impl CypherApp {
             self.should_clear_all_from_midi.clone(),
             self.midi_cc_values.clone(),
             self.fx_wet_dry_mixes.clone(), // Pass a clone of the new map
+            self.metronome_is_active.clone(),
+            self.metronome_bpm.clone(),
         );
         self.looper_states = looper_states;
         self.transport_playhead = engine.transport_playhead.clone();

@@ -49,6 +49,8 @@ fn default_looper_recording_bg() -> Color32 { Color32::from_rgba_unmultiplied(13
 fn default_looper_overdubbing_bg() -> Color32 { Color32::from_rgba_unmultiplied(136, 0, 0, 255) }
 fn default_looper_progress_bar_bg() -> Color32 { Color32::from_rgba_unmultiplied(20, 0, 78, 255) }
 fn default_looper_clear_button_bg() -> Color32 { Color32::from_rgba_unmultiplied(13, 0, 25, 255) }
+fn default_looper_start_stop_button_bg() -> Color32 { Color32::from_rgba_unmultiplied(0, 25, 0, 255) }
+fn default_looper_start_stop_button_active_bg() -> Color32 { Color32::from_rgba_unmultiplied(0, 50, 0, 255) }
 fn default_looper_text_color() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 255) }
 fn default_looper_track_colors() -> [Color32; NUM_LOOPERS] {
     [
@@ -241,10 +243,12 @@ pub struct LooperTheme {
     #[serde(default = "default_looper_overdubbing_bg")] pub overdubbing_bg: Color32,
     #[serde(default = "default_looper_progress_bar_bg")] pub progress_bar_bg: Color32,
     #[serde(default = "default_looper_clear_button_bg")] pub clear_button_bg: Color32,
+    #[serde(default = "default_looper_start_stop_button_bg")] pub start_stop_button_bg: Color32,
+    #[serde(default = "default_looper_start_stop_button_active_bg")] pub start_stop_button_active_bg: Color32,
     #[serde(default = "default_looper_text_color")] pub text_color: Color32,
     #[serde(default = "default_looper_track_colors")] pub track_colors: [Color32; NUM_LOOPERS],
 }
-impl Default for LooperTheme { fn default() -> Self { Self { empty_bg: default_looper_empty_bg(), armed_bg: default_looper_armed_bg(), recording_bg: default_looper_recording_bg(), overdubbing_bg: default_looper_overdubbing_bg(), progress_bar_bg: default_looper_progress_bar_bg(), clear_button_bg: default_looper_clear_button_bg(), text_color: default_looper_text_color(), track_colors: default_looper_track_colors() } } }
+impl Default for LooperTheme { fn default() -> Self { Self { empty_bg: default_looper_empty_bg(), armed_bg: default_looper_armed_bg(), recording_bg: default_looper_recording_bg(), overdubbing_bg: default_looper_overdubbing_bg(), progress_bar_bg: default_looper_progress_bar_bg(), clear_button_bg: default_looper_clear_button_bg(), start_stop_button_bg: default_looper_start_stop_button_bg(), start_stop_button_active_bg: default_looper_start_stop_button_active_bg(), text_color: default_looper_text_color(), track_colors: default_looper_track_colors() } } }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
