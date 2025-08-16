@@ -1,5 +1,3 @@
-// src/settings.rs
-
 use crate::fx;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
@@ -16,9 +14,6 @@ pub struct MidiControlId {
     pub cc: u8,
 }
 
-/// A complete, unique identifier for a high-level MIDI control mapping.
-/// It includes the port name to distinguish between different devices.
-/// This is NOT `Copy` because `String` is a heap-allocated type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FullMidiControlId {
     pub port_name: String,
@@ -26,60 +21,109 @@ pub struct FullMidiControlId {
     pub cc: u8,
 }
 
-// Custom implementation to convert the struct into a single string for JSON map keys.
-impl Serialize for FullMidiControlId {
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FullMidiNoteId {
+    pub port_name: String,
+    pub channel: u8,
+    pub note: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FullMidiIdentifier {
+    ControlChange(FullMidiControlId),
+    Note(FullMidiNoteId),
+}
+
+impl Serialize for FullMidiIdentifier {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // Format: "port_name|channel|cc"
-        // An empty port_name will result in a leading pipe, which is fine. e.g., "|0|74"
-        serializer.serialize_str(&format!("{}|{}|{}", self.port_name, self.channel, self.cc))
+        let s = match self {
+            FullMidiIdentifier::ControlChange(id) => {
+                format!("cc|{}|{}|{}", id.port_name, id.channel, id.cc)
+            }
+            FullMidiIdentifier::Note(id) => {
+                format!("note|{}|{}|{}", id.port_name, id.channel, id.note)
+            }
+        };
+        serializer.serialize_str(&s)
     }
 }
 
-// Custom implementation to parse the string from a JSON map key back into the struct.
-impl<'de> Deserialize<'de> for FullMidiControlId {
+impl<'de> Deserialize<'de> for FullMidiIdentifier {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct FullMidiControlIdVisitor;
+        struct FullMidiIdentifierVisitor;
 
-        impl<'de> de::Visitor<'de> for FullMidiControlIdVisitor {
-            type Value = FullMidiControlId;
+        impl<'de> de::Visitor<'de> for FullMidiIdentifierVisitor {
+            type Value = FullMidiIdentifier;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string in the format 'port_name|channel|cc'")
+                formatter.write_str(
+                    "a string in the format 'cc|port|chan|val' or 'note|port|chan|val'",
+                )
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: de::Error,
             {
-                let parts: Vec<&str> = value.splitn(3, '|').collect();
-                if parts.len() != 3 {
+                let mut parts = value.splitn(4, '|');
+                let id_type = parts
+                    .next()
+                    .ok_or_else(|| E::custom("missing identifier type"))?;
+
+                let port_name = parts
+                    .next()
+                    .ok_or_else(|| E::custom("missing port name"))?
+                    .to_string();
+                let channel_str = parts.next().ok_or_else(|| E::custom("missing channel"))?;
+                let value_str = parts.next().ok_or_else(|| E::custom("missing value"))?;
+
+                if parts.next().is_some() {
                     return Err(E::custom(format!(
-                        "expected 3 parts separated by '|', found {} in '{}'",
-                        parts.len(),
+                        "expected 4 parts separated by '|', found more in '{}'",
                         value
                     )));
                 }
 
-                let port_name = parts[0].to_string();
-                let channel = parts[1].parse::<u8>().map_err(E::custom)?;
-                let cc = parts[2].parse::<u8>().map_err(E::custom)?;
+                let channel = channel_str.parse::<u8>().map_err(E::custom)?;
 
-                Ok(FullMidiControlId {
-                    port_name,
-                    channel,
-                    cc,
-                })
+                match id_type {
+                    "cc" => {
+                        let cc = value_str.parse::<u8>().map_err(E::custom)?;
+                        Ok(FullMidiIdentifier::ControlChange(FullMidiControlId {
+                            port_name,
+                            channel,
+                            cc,
+                        }))
+                    }
+                    "note" => {
+                        let note = value_str.parse::<u8>().map_err(E::custom)?;
+                        Ok(FullMidiIdentifier::Note(FullMidiNoteId {
+                            port_name,
+                            channel,
+                            note,
+                        }))
+                    }
+                    _ => Err(E::custom(format!("unknown identifier type '{}'", id_type))),
+                }
             }
         }
 
-        deserializer.deserialize_str(FullMidiControlIdVisitor)
+        deserializer.deserialize_str(FullMidiIdentifierVisitor)
     }
+}
+
+// NEW: An enum to define how a MIDI control should be interpreted.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MidiControlMode {
+    #[default]
+    Absolute,
+    Relative,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -95,8 +139,10 @@ pub enum ControllableParameter {
     // Instruments
     SynthToggleActive,
     SynthMasterVolume,
+    ToggleSynthEditor,
     SamplerToggleActive,
     SamplerMasterVolume,
+    ToggleSamplerEditor,
 
     // Audio Input
     InputToggleArm,
@@ -112,8 +158,43 @@ pub enum ControllableParameter {
     MasterVolume,
     LimiterThreshold,
 
-    // --- NEW: FX Parameters ---
+    // FX Parameters
     Fx(FxParamIdentifier),
+    FxFocusedWetDry,
+    FxFocusedPresetChange, // New
+    ToggleFxEditor(fx::InsertionPoint),
+
+    // Atmo Engine
+    AtmoMasterVolume,
+    AtmoXY(u8), // 0 for X, 1 for Y
+    AtmoLayerVolume(usize),
+    ToggleAtmoEditor,
+
+    // Metronome
+    MetronomeVolume,
+    MetronomePitch,
+    MetronomeToggleMute,
+}
+
+impl ControllableParameter {
+    pub fn is_continuous(&self) -> bool {
+        matches!(
+            self,
+            ControllableParameter::MixerVolume(_)
+                | ControllableParameter::SynthMasterVolume
+                | ControllableParameter::SamplerMasterVolume
+                | ControllableParameter::MasterVolume
+                | ControllableParameter::LimiterThreshold
+                | ControllableParameter::Fx(_)
+                | ControllableParameter::FxFocusedWetDry
+                | ControllableParameter::FxFocusedPresetChange
+                | ControllableParameter::AtmoMasterVolume
+                | ControllableParameter::AtmoXY(_)
+                | ControllableParameter::AtmoLayerVolume(_)
+                | ControllableParameter::MetronomeVolume
+                | ControllableParameter::MetronomePitch
+        )
+    }
 }
 
 /// Uniquely identifies a single parameter within a specific FX rack.
@@ -121,40 +202,28 @@ pub enum ControllableParameter {
 pub struct FxParamIdentifier {
     pub point: fx::InsertionPoint,
     pub component_index: usize,
-    pub param_name: FxParamName, // Use a fixed-size enum instead of a String
+    pub param_name: FxParamName,
 }
 
-/// An enum representing all possible parameter names for all FX components.
-/// This is necessary to make `FxParamIdentifier` and `ControllableParameter` `Copy`.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FxParamName {
-    // Shared
     Bypass,
     WetDry,
-    // Gain
     GainDb,
-    // Delay
     TimeMs,
     Feedback,
     Damping,
-    // Filter
     Mode,
     FrequencyHz,
     Resonance,
-    // LFO
     Waveform,
-    // EnvelopeFollower
     AttackMs,
     ReleaseMs,
-    // Waveshaper
     DriveDb,
-    // Quantizer
     BitDepth,
     Downsample,
-    // Reverb
     Size,
     Decay,
-    // Flanger
     RateHz,
     DepthMs,
 }
@@ -194,8 +263,10 @@ impl std::fmt::Display for ControllableParameter {
             ControllableParameter::MixerToggleSolo(i) => write!(f, "Mixer Ch {} Solo", i + 1),
             ControllableParameter::SynthToggleActive => write!(f, "Synth Active Toggle"),
             ControllableParameter::SynthMasterVolume => write!(f, "Synth Master Volume"),
+            ControllableParameter::ToggleSynthEditor => write!(f, "Toggle Synth Editor"),
             ControllableParameter::SamplerToggleActive => write!(f, "Sampler Active Toggle"),
             ControllableParameter::SamplerMasterVolume => write!(f, "Sampler Master Volume"),
+            ControllableParameter::ToggleSamplerEditor => write!(f, "Toggle Sampler Editor"),
             ControllableParameter::InputToggleArm => write!(f, "Input Arm Toggle"),
             ControllableParameter::InputToggleMonitor => write!(f, "Input Monitor Toggle"),
             ControllableParameter::TransportTogglePlay => write!(f, "Transport Play/Stop"),
@@ -205,7 +276,6 @@ impl std::fmt::Display for ControllableParameter {
             ControllableParameter::MasterVolume => write!(f, "Master Volume"),
             ControllableParameter::LimiterThreshold => write!(f, "Limiter Threshold"),
             ControllableParameter::Fx(id) => {
-                // Handle the special case for Wet/Dry mix to prevent overflow.
                 if id.component_index == usize::MAX {
                     write!(f, "FX {}:{}", id.point, id.param_name.as_str())
                 } else {
@@ -218,6 +288,20 @@ impl std::fmt::Display for ControllableParameter {
                     )
                 }
             }
+            ControllableParameter::FxFocusedWetDry => write!(f, "Focused FX Rack Dry/Wet"),
+            ControllableParameter::FxFocusedPresetChange => write!(f, "Focused FX Preset Change"), // New
+            ControllableParameter::ToggleFxEditor(point) => {
+                write!(f, "Toggle FX Editor ({})", point)
+            }
+            ControllableParameter::AtmoMasterVolume => write!(f, "Atmo Master Volume"),
+            ControllableParameter::AtmoXY(axis) => {
+                write!(f, "Atmo Pad {}", if *axis == 0 { "X" } else { "Y" })
+            }
+            ControllableParameter::AtmoLayerVolume(i) => write!(f, "Atmo Layer {} Volume", i + 1),
+            ControllableParameter::ToggleAtmoEditor => write!(f, "Toggle Atmosphere Editor"),
+            ControllableParameter::MetronomeVolume => write!(f, "Metronome Volume"),
+            ControllableParameter::MetronomePitch => write!(f, "Metronome Pitch"),
+            ControllableParameter::MetronomeToggleMute => write!(f, "Metronome Mute Toggle"),
         }
     }
 }
@@ -227,7 +311,8 @@ impl std::fmt::Display for ControllableParameter {
 pub struct AppSettings {
     pub host_name: Option<String>,
     pub midi_port_names: Vec<String>,
-    pub midi_channel: u8,
+    pub audio_note_channel: u8,
+    pub midi_device_control_channels: BTreeMap<String, u8>,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub sample_rate: Option<u32>,
@@ -237,7 +322,10 @@ pub struct AppSettings {
     pub last_synth_preset: Option<PathBuf>,
     pub last_theme: Option<PathBuf>,
     pub bpm_rounding: bool,
-    pub midi_mappings: BTreeMap<FullMidiControlId, ControllableParameter>,
+    pub relative_encoder_multiplier: f32,
+    pub midi_mappings: BTreeMap<FullMidiIdentifier, ControllableParameter>,
+    pub midi_mapping_modes: BTreeMap<FullMidiIdentifier, MidiControlMode>,
+    pub midi_mapping_inversions: BTreeMap<FullMidiIdentifier, bool>,
 }
 
 impl Default for AppSettings {
@@ -245,7 +333,8 @@ impl Default for AppSettings {
         Self {
             host_name: None,
             midi_port_names: Vec::new(),
-            midi_channel: 0,
+            audio_note_channel: 0,
+            midi_device_control_channels: BTreeMap::new(),
             input_device: None,
             output_device: None,
             sample_rate: None,
@@ -255,7 +344,10 @@ impl Default for AppSettings {
             last_synth_preset: None,
             last_theme: None,
             bpm_rounding: false,
+            relative_encoder_multiplier: 1.0,
             midi_mappings: BTreeMap::new(),
+            midi_mapping_modes: BTreeMap::new(),
+            midi_mapping_inversions: BTreeMap::new(),
         }
     }
 }
@@ -264,8 +356,6 @@ pub fn get_config_dir() -> Option<PathBuf> {
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let app_settings_dir = exe_dir.join("AppSettings");
-
-            // Ensure main directory and subdirectories exist
             for dir in [
                 &app_settings_dir,
                 &app_settings_dir.join("Samples"),
@@ -275,6 +365,7 @@ pub fn get_config_dir() -> Option<PathBuf> {
                 &app_settings_dir.join("LiveRecordings"),
                 &app_settings_dir.join("Sessions"),
                 &app_settings_dir.join("FX"),
+                &app_settings_dir.join("Atmospheres"),
             ] {
                 if !dir.exists() {
                     if let Err(e) = fs::create_dir_all(dir) {
@@ -291,6 +382,11 @@ pub fn get_config_dir() -> Option<PathBuf> {
 }
 
 pub fn save_settings(settings: &mut AppSettings) {
+    // Optimization: remove default modes before saving to keep the json clean.
+    settings
+        .midi_mapping_modes
+        .retain(|_, &mut mode| mode != MidiControlMode::default());
+
     if let Some(dir) = get_config_dir() {
         let path = dir.join("settings.json");
         match serde_json::to_string_pretty(settings) {
@@ -312,8 +408,19 @@ pub fn load_settings() -> AppSettings {
         if path.exists() {
             return match fs::read_to_string(&path) {
                 Ok(json_string) => match serde_json::from_str::<AppSettings>(&json_string) {
-                    Ok(settings) => {
-                        // The BTreeMap is now deserialized directly.
+                    Ok(mut settings) => {
+                        // Backwards compatibility for the old `midi_channel` field.
+                        if let Ok(raw_value) =
+                            serde_json::from_str::<serde_json::Value>(&json_string)
+                        {
+                            if raw_value.get("audio_note_channel").is_none() {
+                                if let Some(old_channel) =
+                                    raw_value.get("midi_channel").and_then(|v| v.as_u64())
+                                {
+                                    settings.audio_note_channel = old_channel as u8;
+                                }
+                            }
+                        }
                         settings
                     }
                     Err(e) => {

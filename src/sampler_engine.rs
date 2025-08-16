@@ -413,12 +413,12 @@ impl SamplerEngine {
         }
     }
 
-    fn get_lfo_freq(sample_rate: f32, settings: LfoSettings, transport_len_samples: usize) -> f32 {
+    fn get_lfo_freq(sample_rate: f32, settings: LfoSettings, musical_bar_len: usize) -> f32 {
         match settings.mode {
             LfoRateMode::Hz => settings.hz_rate,
             LfoRateMode::Sync => {
-                if transport_len_samples > 0 {
-                    (sample_rate / transport_len_samples as f32) * settings.sync_rate
+                if musical_bar_len > 0 {
+                    (sample_rate / musical_bar_len as f32) * settings.sync_rate
                 } else {
                     0.0
                 }
@@ -475,7 +475,7 @@ impl Engine for SamplerEngine {
     fn process(
         &mut self,
         output_buffer: &mut [f32],
-        transport_len_samples: usize,
+        musical_bar_len: usize,
         midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
     ) {
         let block_size = output_buffer.len();
@@ -491,8 +491,8 @@ impl Engine for SamplerEngine {
         // --- Pre-calculate LFOs for the entire block ---
         let mut lfo1_output = vec![0.0; block_size];
         let mut lfo2_output = vec![0.0; block_size];
-        let lfo1_freq = Self::get_lfo_freq(self.sample_rate, lfo1_settings, transport_len_samples);
-        let lfo2_freq = Self::get_lfo_freq(self.sample_rate, lfo2_settings, transport_len_samples);
+        let lfo1_freq = Self::get_lfo_freq(self.sample_rate, lfo1_settings, musical_bar_len);
+        let lfo2_freq = Self::get_lfo_freq(self.sample_rate, lfo2_settings, musical_bar_len);
         for i in 0..block_size {
             lfo1_output[i] =
                 self.lfo1
@@ -646,7 +646,14 @@ impl Engine for SamplerEngine {
                 .store(index, Ordering::Relaxed);
 
             let target_voice = if self.is_polyphonic {
-                self.voices.iter_mut().max_by_key(|v| v.age)
+                self.voices.iter_mut().max_by_key(|v| {
+                    let priority = match v.amp_adsr.state {
+                        crate::synth::AdsrState::Idle => 2,
+                        crate::synth::AdsrState::Release => 1,
+                        _ => 0, // Attack, Decay, Sustain
+                    };
+                    (priority, v.age)
+                })
             } else {
                 for v in self.voices.iter_mut() {
                     v.note_off();

@@ -18,6 +18,7 @@ pub enum InsertionPoint {
     Sampler,
     Input,
     Master,
+    Atmo,
 }
 
 // Custom implementation to convert the enum to a string for JSON map keys.
@@ -32,6 +33,7 @@ impl Serialize for InsertionPoint {
             InsertionPoint::Sampler => "Sampler".to_string(),
             InsertionPoint::Input => "Input".to_string(),
             InsertionPoint::Master => "Master".to_string(),
+            InsertionPoint::Atmo => "Atmo".to_string(),
         };
         serializer.serialize_str(&s)
     }
@@ -59,6 +61,7 @@ impl<'de> Deserialize<'de> for InsertionPoint {
                 "Sampler" => Ok(InsertionPoint::Sampler),
                 "Input" => Ok(InsertionPoint::Input),
                 "Master" => Ok(InsertionPoint::Master),
+                "Atmo" => Ok(InsertionPoint::Atmo),
                 _ => Err(de::Error::custom(format!("Unknown insertion point: {}", s))),
             }
         }
@@ -74,6 +77,7 @@ impl fmt::Display for InsertionPoint {
             InsertionPoint::Sampler => write!(f, "Sampler"),
             InsertionPoint::Input => write!(f, "Audio Input"),
             InsertionPoint::Master => write!(f, "Master Output"),
+            InsertionPoint::Atmo => write!(f, "Atmosphere"),
         }
     }
 }
@@ -90,6 +94,7 @@ pub enum FxComponentType {
     Quantizer,
     Reverb,
     Flanger,
+    Formant,
 }
 
 /// Describes how one component in the chain modulates a parameter of another.
@@ -255,6 +260,11 @@ where
                         - flanger::FEEDBACK_OFFSET;
                     serde_json::json!({ "rate_hz": rate_hz, "depth_ms": depth_ms, "feedback": feedback })
                 }
+                ComponentParams::Formant(p) => {
+                    let character = (p.character.load(Ordering::Relaxed) as f32 / formant::PARAM_SCALER) - formant::CHARACTER_OFFSET;
+                    let resonance = p.resonance.load(Ordering::Relaxed) as f32 / formant::PARAM_SCALER;
+                    serde_json::json!({ "character": character, "resonance": resonance })
+                }
             },
         };
         seq.serialize_element(&serializable_link)?;
@@ -396,6 +406,12 @@ where
                     ((feedback + flanger::FEEDBACK_OFFSET) * flanger::PARAM_SCALER) as u32,
                     Ordering::Relaxed,
                 );
+            }
+            ComponentParams::Formant(p) => {
+                let character = p_map.get("character").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let resonance = p_map.get("resonance").and_then(|v| v.as_f64()).unwrap_or(0.7) as f32;
+                p.character.store(((character + formant::CHARACTER_OFFSET) * formant::PARAM_SCALER) as u32, Ordering::Relaxed);
+                p.resonance.store((resonance * formant::PARAM_SCALER) as u32, Ordering::Relaxed);
             }
         }
 

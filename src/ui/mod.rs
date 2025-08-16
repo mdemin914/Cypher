@@ -7,7 +7,9 @@ mod eighty_eight_keys_view;
 mod slicer_view;
 mod midi_mapping_view;
 mod about_view;
-mod fx_editor_view; // Added
+mod fx_editor_view;
+mod atmo_view;
+// Added
 
 pub use main_view::draw_main_view;
 pub use options_view::draw_options_window;

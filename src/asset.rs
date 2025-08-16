@@ -1,6 +1,8 @@
+// src/asset.rs
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 // A simple atomic counter to generate unique IDs for widgets.
@@ -16,6 +18,7 @@ pub enum Asset {
     SynthPreset(SynthPresetRef),
     SamplerKit(SamplerKitRef),
     Session(SessionRef),
+    Folder(FolderRef),
 }
 
 impl Default for Asset {
@@ -38,6 +41,7 @@ impl AssetRef for Asset {
             Asset::SynthPreset(r) => &r.name,
             Asset::SamplerKit(r) => &r.name,
             Asset::Session(r) => &r.name,
+            Asset::Folder(r) => &r.name,
         }
     }
     fn path(&self) -> &PathBuf {
@@ -46,6 +50,7 @@ impl AssetRef for Asset {
             Asset::SynthPreset(r) => &r.path,
             Asset::SamplerKit(r) => &r.path,
             Asset::Session(r) => &r.path,
+            Asset::Folder(r) => &r.path,
         }
     }
 }
@@ -59,7 +64,18 @@ impl PartialOrd for Asset {
 
 impl Ord for Asset {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.path().cmp(other.path()).then_with(|| self.name().cmp(other.name()))
+        // Folders should always be sorted before files.
+        let self_is_folder = matches!(self, Asset::Folder(_));
+        let other_is_folder = matches!(other, Asset::Folder(_));
+
+        match (self_is_folder, other_is_folder) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => self
+                .path()
+                .cmp(other.path())
+                .then_with(|| self.name().cmp(other.name())),
+        }
     }
 }
 
@@ -81,8 +97,12 @@ impl Default for SampleRef {
 }
 
 impl AssetRef for SampleRef {
-    fn name(&self) -> &str { &self.name }
-    fn path(&self) -> &PathBuf { &self.path }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 impl SampleRef {
@@ -104,14 +124,22 @@ pub struct SynthPresetRef {
 }
 
 impl AssetRef for SynthPresetRef {
-    fn name(&self) -> &str { &self.name }
-    fn path(&self) -> &PathBuf { &self.path }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 impl SynthPresetRef {
     pub fn new(path: PathBuf) -> Option<Self> {
         let name = path.file_stem()?.to_string_lossy().to_string();
-        Some(Self { id: new_id(), name, path })
+        Some(Self {
+            id: new_id(),
+            name,
+            path,
+        })
     }
 }
 
@@ -123,14 +151,22 @@ pub struct SamplerKitRef {
 }
 
 impl AssetRef for SamplerKitRef {
-    fn name(&self) -> &str { &self.name }
-    fn path(&self) -> &PathBuf { &self.path }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 impl SamplerKitRef {
     pub fn new(path: PathBuf) -> Option<Self> {
         let name = path.file_stem()?.to_string_lossy().to_string();
-        Some(Self { id: new_id(), name, path })
+        Some(Self {
+            id: new_id(),
+            name,
+            path,
+        })
     }
 }
 
@@ -142,17 +178,51 @@ pub struct SessionRef {
 }
 
 impl AssetRef for SessionRef {
-    fn name(&self) -> &str { &self.name }
-    fn path(&self) -> &PathBuf { &self.path }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 impl SessionRef {
     pub fn new(path: PathBuf) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_string();
-        Some(Self { id: new_id(), name, path })
+        Some(Self {
+            id: new_id(),
+            name,
+            path,
+        })
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct FolderRef {
+    pub id: egui::Id,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl AssetRef for FolderRef {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl FolderRef {
+    pub fn new(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        Some(Self {
+            id: new_id(),
+            name,
+            path: path.to_path_buf(),
+        })
+    }
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct LibraryFolder {
@@ -170,10 +240,7 @@ impl LibraryFolder {
         let mut current_folder = self;
 
         for segment in folder_path {
-            current_folder = current_folder
-                .subfolders
-                .entry(segment.clone())
-                .or_default();
+            current_folder = current_folder.subfolders.entry(segment.clone()).or_default();
         }
 
         current_folder.assets.insert(asset);
@@ -184,7 +251,6 @@ impl LibraryFolder {
         self.subfolders.clear();
     }
 }
-
 
 #[derive(Default, Debug)]
 pub struct AssetLibrary {

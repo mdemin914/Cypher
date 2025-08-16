@@ -20,7 +20,8 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
     let mut is_open = app.fx_editor_window_open;
     let theme = app.theme.synth_editor_window.clone();
 
-    let title = if let Some(target) = app.active_fx_target {
+    // Correctly read the active_fx_target for the title
+    let title = if let Some(target) = *app.active_fx_target.read().unwrap() {
         format!("FX Chain Editor - {}", target)
     } else {
         "FX Chain Editor".to_string()
@@ -33,7 +34,8 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            let target = if let Some(t) = app.active_fx_target {
+            // Correctly read the active_fx_target for the main logic
+            let target = if let Some(t) = *app.active_fx_target.read().unwrap() {
                 t
             } else {
                 ui.label("No FX Chain selected.");
@@ -47,7 +49,6 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
             let mut preset_to_load_path: Option<PathBuf> = None;
             let mut save_preset_as = false;
 
-            // This is the new flag we'll use to detect UI changes in modulation settings.
             let mut any_mod_ui_changed = false;
 
             // --- Top Bar ---
@@ -93,6 +94,7 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                             FxComponentType::Lfo, FxComponentType::EnvelopeFollower,
                             FxComponentType::Waveshaper, FxComponentType::Quantizer,
                             FxComponentType::Reverb, FxComponentType::Flanger,
+                            FxComponentType::Formant,
                         ];
                         for comp_type in all_types {
                             if ui.selectable_label(false, format!("{:?}", comp_type)).clicked() {
@@ -135,10 +137,7 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                             });
                             ui.separator();
 
-                            // *** HERE IS THE FIX IN ACTION ***
-                            // We capture the return value of the child function.
                             if draw_component_ui(ui, link, i, &chain_clone_for_mods) {
-                                // If it returns true, we set our flag for this frame.
                                 any_mod_ui_changed = true;
                             }
                         });
@@ -197,7 +196,13 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                     if let Some(path) = FileDialog::new()
                         .add_filter("json", &["json"])
                         .set_directory(settings::get_config_dir().unwrap_or_default().join("FX"))
-                        .save_file() {
+                        .save_file()
+                    {
+                        // Update the preset's internal name before saving.
+                        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                            preset.name = name.to_string();
+                        }
+
                         if let Ok(json_string) = serde_json::to_string_pretty(preset) {
                             if fs::write(path, json_string).is_ok() {
                                 app.rescan_fx_presets();
@@ -211,9 +216,6 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
                 app.send_command(AudioCommand::ClearFxRack(target));
             }
 
-            // *** HERE IS THE FINAL PART OF THE FIX ***
-            // If any modulation UI was changed, we treat it as a structural change
-            // to force a reload of the FX rack on the audio thread.
             if any_mod_ui_changed {
                 structure_changed = true;
             }
@@ -225,18 +227,19 @@ pub fn draw_fx_editor_window(app: &mut CypherApp, ctx: &egui::Context) {
             }
         });
 
+    if !is_open {
+        // If the window was closed, clear the active target
+        *app.active_fx_target.write().unwrap() = None;
+    }
     app.fx_editor_window_open = is_open;
 }
 
 /// Dynamically draws the UI for a single FxChainLink.
 fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &[FxChainLink]) -> bool {
-    // This flag will be returned at the end.
     let mut modulation_was_changed = false;
 
     let grid_id = format!("component_grid_{}", index);
     Grid::new(grid_id).show(ui, |ui| match &link.params {
-        // --- ALL THE CODE FOR THE MAIN COMPONENT PARAMETERS (Gain, Delay, etc.) REMAINS IDENTICAL ---
-        // --- You do not need to change anything in this large match statement. ---
         ComponentParams::Gain(p) => {
             ui.label("Gain (dB)");
             let mut gain_db = (p.gain_db.load(Ordering::Relaxed) as f32 / gain::DB_SCALER) - gain::DB_OFFSET;
@@ -374,12 +377,11 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
 
             ui.label("Sensitivity");
             let mut sensitivity = p.sensitivity.load(Ordering::Relaxed) as f32 / envelope_follower::PARAM_SCALER;
-            // A logarithmic slider is best for gain/sensitivity controls. Range from 0.1x to 100x.
             if ui.add(Slider::new(&mut sensitivity, 0.1..=100.0).logarithmic(true)).changed() {
                 p.sensitivity.store((sensitivity * envelope_follower::PARAM_SCALER) as u32, Ordering::Relaxed);
             }
             ui.end_row();
-            
+
         }
         ComponentParams::Quantizer(p) => {
             ui.label("Bit Depth");
@@ -396,12 +398,25 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
             }
             ui.end_row();
         }
+        ComponentParams::Formant(p) => {
+            ui.label("Character");
+            let mut character = (p.character.load(Ordering::Relaxed) as f32 / formant::PARAM_SCALER) - formant::CHARACTER_OFFSET;
+            if ui.add(Slider::new(&mut character, -1.0..=1.0)).changed() {
+                p.character.store(((character + formant::CHARACTER_OFFSET) * formant::PARAM_SCALER) as u32, Ordering::Relaxed);
+            }
+            ui.end_row();
+
+            ui.label("Resonance");
+            let mut resonance = p.resonance.load(Ordering::Relaxed) as f32 / formant::PARAM_SCALER;
+            if ui.add(Slider::new(&mut resonance, 0.0..=1.0)).changed() {
+                p.resonance.store((resonance * formant::PARAM_SCALER) as u32, Ordering::Relaxed);
+            }
+            ui.end_row();
+        }
     });
 
     let is_modulator = matches!(link.component_type, FxComponentType::Lfo | FxComponentType::EnvelopeFollower);
     if is_modulator {
-        // NOTE: The local `mods_changed` variable has been removed.
-        // We now use `modulation_was_changed` from the parent scope.
         egui::collapsing_header::CollapsingHeader::new("Modulations")
             .id_salt(format!("mod_header_{}", index))
             .show(ui, |ui| {
@@ -425,7 +440,6 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
                                     if ui.selectable_label(modulation.target_component_index == target_idx, &target_text).clicked() {
                                         modulation.target_component_index = target_idx;
                                         modulation.target_parameter_name.clear();
-                                        // Set the flag
                                         modulation_was_changed = true;
                                     }
                                 }
@@ -445,7 +459,6 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
                             .show_ui(ui, |ui| {
                                 for param in available_params {
                                     if ui.selectable_value(&mut modulation.target_parameter_name, param.to_string(), param).changed() {
-                                        // Set the flag
                                         modulation_was_changed = true;
                                     }
                                 }
@@ -455,7 +468,6 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
 
                         let (min, max) = get_mod_amount_range(&modulation.target_parameter_name);
                         if ui.add(Slider::new(&mut modulation.amount, min..=max)).changed() {
-                            // Set the flag
                             modulation_was_changed = true;
                         }
                         if ui.button("x").clicked() {
@@ -465,7 +477,6 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
                 }
                 if let Some(idx) = mod_to_remove {
                     link.modulations.remove(idx);
-                    // Set the flag
                     modulation_was_changed = true;
                 }
 
@@ -478,16 +489,12 @@ fn draw_component_ui(ui: &mut Ui, link: &mut FxChainLink, index: usize, chain: &
                             ..Default::default()
                         });
                     }
-                    // Set the flag
                     modulation_was_changed = true;
                 }
             });
     }
-
-    // Return the final state of the flag.
     modulation_was_changed
 }
-
 
 /// Helper to get a list of modulatable parameters for a given component type.
 fn get_available_params(comp_type: Option<FxComponentType>) -> Vec<&'static str> {
@@ -500,6 +507,7 @@ fn get_available_params(comp_type: Option<FxComponentType>) -> Vec<&'static str>
         Some(FxComponentType::Reverb) => vec!["size", "decay", "damping"],
         Some(FxComponentType::Flanger) => vec!["rate_hz", "depth_ms", "feedback"],
         Some(FxComponentType::EnvelopeFollower) => vec!["attack_ms", "release_ms"],
+        Some(FxComponentType::Formant) => vec!["character", "resonance"],
         _ => vec![],
     }
 }
@@ -509,7 +517,9 @@ fn get_mod_amount_range(param_name: &str) -> (f32, f32) {
     match param_name {
         "frequency_hz" => (-10000.0, 10000.0),
         "time_ms" | "depth_ms" => (-50.0, 50.0),
-        "feedback" | "resonance" | "damping" | "size" | "decay" => (-1.0, 1.0),
+        "feedback" | "resonance" | "damping" | "size" | "decay" | "character" => (-1.0, 1.0),
+        "semitones" => (-24.0, 24.0),
+        "cents" => (-100.0, 100.0),
         "gain_db" => (-24.0, 24.0),
         "drive_db" => (0.0, 48.0),
         "bit_depth" => (-15.0, 15.0),

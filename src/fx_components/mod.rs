@@ -5,6 +5,7 @@ pub mod delay;
 pub mod envelope_follower;
 pub mod filter;
 pub mod flanger;
+pub mod formant;
 pub mod gain;
 pub mod lfo;
 pub mod quantizer;
@@ -16,6 +17,7 @@ pub use delay::{DelayLine, Params as DelayParams};
 pub use envelope_follower::{EnvelopeFollower, Params as EnvelopeFollowerParams};
 pub use filter::{Filter, Params as FilterParams};
 pub use flanger::{Flanger, Params as FlangerParams};
+pub use formant::{Formant, Params as FormantParams};
 pub use gain::{Gain, Params as GainParams};
 pub use lfo::{Lfo, Params as LfoParams};
 pub use quantizer::{Quantizer, Params as QuantizerParams};
@@ -41,6 +43,7 @@ pub enum ComponentParams {
     Quantizer(QuantizerParams),
     Reverb(ReverbParams),
     Flanger(FlangerParams),
+    Formant(FormantParams),
 }
 
 impl ComponentParams {
@@ -60,6 +63,7 @@ impl ComponentParams {
             FxComponentType::Quantizer => ComponentParams::Quantizer(QuantizerParams::default()),
             FxComponentType::Reverb => ComponentParams::Reverb(ReverbParams::default()),
             FxComponentType::Flanger => ComponentParams::Flanger(FlangerParams::default()),
+            FxComponentType::Formant => ComponentParams::Formant(FormantParams::default()),
         }
     }
 
@@ -75,6 +79,7 @@ impl ComponentParams {
             ComponentParams::Quantizer(p) => p.bypassed.clone(),
             ComponentParams::Reverb(p) => p.bypassed.clone(),
             ComponentParams::Flanger(p) => p.bypassed.clone(),
+            ComponentParams::Formant(p) => p.bypassed.clone(),
         }
     }
 
@@ -91,6 +96,7 @@ impl ComponentParams {
             ComponentParams::Quantizer(p) => p.get_param(name),
             ComponentParams::Reverb(p) => p.get_param(name),
             ComponentParams::Flanger(p) => p.get_param(name),
+            ComponentParams::Formant(p) => p.get_param(name),
         }
     }
 }

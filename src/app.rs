@@ -1,6 +1,7 @@
 // src/app.rs
 
 use crate::asset::{Asset, AssetLibrary, SamplerKitRef, SampleRef, SessionRef, SynthPresetRef};
+use crate::atmo::AtmoPreset;
 use crate::audio_device;
 use crate::audio_engine::{AudioCommand, AudioEngine};
 use crate::audio_io;
@@ -11,7 +12,7 @@ use crate::mixer::MixerState;
 use crate::preset::{SynthEnginePreset, SynthPreset};
 use crate::sampler::{SamplerKit, SamplerPadFxSettings};
 use crate::sampler_engine::{self, NUM_SAMPLE_SLOTS};
-use crate::settings::{self, AppSettings, ControllableParameter, FullMidiControlId};
+use crate::settings::{self, AppSettings, ControllableParameter, FullMidiIdentifier, MidiControlMode};
 use crate::synth::{
     EngineParamsUnion, EngineWithVolumeAndPeak, LfoRateMode, ModSource, SamplerParams,
     WavetableParams, WAVETABLE_SIZE,
@@ -24,6 +25,7 @@ use anyhow::Result;
 use chrono::Local;
 use cpal::{Device, HostId, Stream};
 use egui::Color32;
+use hound;
 use midir::{MidiInputConnection, MidiInputPort};
 use rfd::FileDialog;
 use ringbuf::{HeapConsumer, HeapRb};
@@ -38,17 +40,21 @@ use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicU16, AtomicI8, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use walkdir::WalkDir;
+
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum LibraryView {
     Samples,
     Synths,
     Kits,
+    Soundscapes,
     Sessions,
     EightyEightKeys,
 }
@@ -59,13 +65,17 @@ pub struct SessionData {
     pub mixer_state: MixerState,
     pub synth_preset_path: Option<PathBuf>,
     pub sampler_kit_path: Option<PathBuf>,
+    pub atmo_preset: AtmoPreset,
+    pub atmo_xy_coords: u64,
     pub is_input_armed: bool,
     pub is_input_monitored: bool,
     pub transport_len_samples: usize,
     pub original_sample_rate: u32,
     pub fx_presets: BTreeMap<fx::InsertionPoint, fx::FxPreset>,
-    // New field to save the wet/dry values
     pub fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, f32>,
+    pub looper_cycles: [u32; NUM_LOOPERS],
+    pub tempo_multiplier: u32,
+    pub master_looper_index: usize,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -166,6 +176,7 @@ pub struct CypherApp {
     pub midi_mapping_window_open: bool,
     pub about_window_open: bool,
     pub fx_editor_window_open: bool,
+    pub atmo_window_open: bool,
     pub is_recording_output: bool,
     pub recording_notification: Option<(String, Instant)>,
     pub library_path: Vec<String>,
@@ -190,6 +201,8 @@ pub struct CypherApp {
 
     // --- UI / Shared State ---
     pub looper_states: Vec<SharedLooperState>,
+    pub master_looper_index: Arc<AtomicUsize>,
+    pub tempo_multiplier: Arc<AtomicU32>,
     pub transport_playhead: Arc<AtomicUsize>,
     pub transport_len_samples: Arc<AtomicUsize>,
     pub transport_is_playing: Arc<AtomicBool>,
@@ -235,6 +248,15 @@ pub struct CypherApp {
     pub sampler_peak_meter: Arc<AtomicU32>,
     pub displayed_sampler_peak_level: f32,
 
+    // --- Atmo State ---
+    pub atmo: AtmoPreset,
+    pub atmo_master_volume: Arc<AtomicU32>,
+    pub atmo_layer_volumes: [Arc<AtomicU32>; 4],
+    pub atmo_xy_coords: Arc<AtomicU64>,
+    pub atmo_peak_meter: Arc<AtomicU32>,
+    pub displayed_atmo_peak_level: f32,
+    pub available_atmo_presets: Vec<(String, PathBuf)>,
+
     // --- 88 Keys Theory State ---
     pub theory_mode: TheoryMode,
     pub chord_display_mode: ChordDisplayMode,
@@ -248,14 +270,22 @@ pub struct CypherApp {
     pub slicer_state: SlicerState,
 
     // --- MIDI Mapping State ---
-    pub midi_mappings: Arc<RwLock<BTreeMap<FullMidiControlId, ControllableParameter>>>,
+    // CHANGED: The key is now FullMidiIdentifier
+    pub midi_mappings: Arc<RwLock<BTreeMap<FullMidiIdentifier, ControllableParameter>>>,
+    pub midi_mapping_modes: Arc<RwLock<BTreeMap<FullMidiIdentifier, MidiControlMode>>>,
     pub midi_learn_target: Arc<RwLock<Option<ControllableParameter>>>,
-    pub last_midi_cc_message: Arc<RwLock<Option<(FullMidiControlId, Instant)>>>,
+    pub last_midi_cc_message: Arc<RwLock<Option<(FullMidiIdentifier, Instant)>>>,
     pub midi_mod_matrix_learn_target: Arc<RwLock<Option<(usize, usize)>>>,
     pub last_learned_mod_source: Arc<RwLock<Option<settings::MidiControlId>>>,
+    pub midi_fx_editor_toggle_request: Arc<RwLock<Option<fx::InsertionPoint>>>,
+    pub midi_atmo_editor_toggle_request: Arc<AtomicBool>,
+    pub midi_synth_editor_toggle_request: Arc<AtomicBool>,
+    pub midi_sampler_editor_toggle_request: Arc<AtomicBool>,
+    pub midi_fx_preset_change_request: Arc<AtomicI8>,
+    pub midi_mapping_inversions: Arc<RwLock<BTreeMap<FullMidiIdentifier, bool>>>,
 
     // --- FX State ---
-    pub active_fx_target: Option<fx::InsertionPoint>,
+    pub active_fx_target: Arc<RwLock<Option<fx::InsertionPoint>>>,
     pub fx_presets: BTreeMap<fx::InsertionPoint, fx::FxPreset>,
     pub fx_wet_dry_mixes: BTreeMap<fx::InsertionPoint, Arc<AtomicU32>>,
     pub available_fx_presets: Vec<(String, PathBuf)>,
@@ -265,7 +295,8 @@ pub struct CypherApp {
     pub selected_host_index: usize,
     pub midi_ports: Vec<(String, MidiInputPort)>,
     pub enabled_midi_ports: BTreeSet<String>,
-    pub selected_midi_channel: Arc<AtomicU8>,
+    // CHANGED: This is now just for the audio engine, not a general-purpose channel.
+    pub audio_note_channel: Arc<AtomicU8>,
     pub input_devices: Vec<(String, Device)>,
     pub output_devices: Vec<(String, Device)>,
     pub selected_input_device_index: Option<usize>,
@@ -370,6 +401,8 @@ impl CypherApp {
         let should_clear_all_from_midi = Arc::new(AtomicBool::new(false));
 
         let midi_mappings = Arc::new(RwLock::new(settings.midi_mappings.clone()));
+        let midi_mapping_modes = Arc::new(RwLock::new(settings.midi_mapping_modes.clone()));
+        let midi_mapping_inversions = Arc::new(RwLock::new(settings.midi_mapping_inversions.clone()));
 
         // Create the shared state for MIDI CC values
         let midi_cc_values = Arc::new(std::array::from_fn(|_| {
@@ -378,7 +411,6 @@ impl CypherApp {
 
         let (_producer, consumer) = HeapRb::<usize>::new(32).split();
 
-        // **NEW**: Initialize the persistent Wet/Dry mix atomics for every slot.
         let mut fx_wet_dry_mixes = BTreeMap::new();
         let all_insertion_points = [
             (0..NUM_LOOPERS)
@@ -389,6 +421,7 @@ impl CypherApp {
                 fx::InsertionPoint::Sampler,
                 fx::InsertionPoint::Input,
                 fx::InsertionPoint::Master,
+                fx::InsertionPoint::Atmo,
             ],
         ]
             .concat();
@@ -406,6 +439,7 @@ impl CypherApp {
             midi_mapping_window_open: false,
             about_window_open: false,
             fx_editor_window_open: false,
+            atmo_window_open: false,
             is_recording_output: false,
             recording_notification: None,
             library_path: Vec::new(),
@@ -425,6 +459,8 @@ impl CypherApp {
             midi_timer_should_exit: Arc::new(AtomicBool::new(false)),
             pad_event_consumer: consumer,
             looper_states: Vec::new(),
+            master_looper_index: Arc::new(AtomicUsize::new(usize::MAX)),
+            tempo_multiplier: Arc::new(AtomicU32::new(1_000_000)),
             transport_playhead: Arc::new(AtomicUsize::new(0)),
             transport_len_samples: Arc::new(AtomicUsize::new(0)),
             transport_is_playing: Arc::new(AtomicBool::new(true)),
@@ -463,6 +499,13 @@ impl CypherApp {
             sampler_volume,
             sampler_peak_meter: Arc::new(AtomicU32::new(0)),
             displayed_sampler_peak_level: 0.0,
+            atmo: AtmoPreset::default(),
+            atmo_master_volume: Arc::new(AtomicU32::new(1_000_000)),
+            atmo_layer_volumes: std::array::from_fn(|_| Arc::new(AtomicU32::new(1_000_000))),
+            atmo_xy_coords: Arc::new(AtomicU64::new(0)),
+            atmo_peak_meter: Arc::new(AtomicU32::new(0)),
+            displayed_atmo_peak_level: 0.0,
+            available_atmo_presets: Vec::new(),
             theory_mode: TheoryMode::Scales,
             chord_display_mode: ChordDisplayMode::Stacked,
             selected_scale: Scale::Ionian,
@@ -472,19 +515,27 @@ impl CypherApp {
             last_recognized_chord_notes: BTreeSet::new(),
             slicer_state: SlicerState::new(),
             midi_mappings,
+            midi_mapping_modes,
+            midi_mapping_inversions,
             midi_learn_target: Arc::new(RwLock::new(None)),
             last_midi_cc_message: Arc::new(RwLock::new(None)),
             midi_mod_matrix_learn_target: Arc::new(RwLock::new(None)),
             last_learned_mod_source: Arc::new(RwLock::new(None)),
-            active_fx_target: None,
+            midi_fx_editor_toggle_request: Arc::new(RwLock::new(None)),
+            midi_atmo_editor_toggle_request: Arc::new(AtomicBool::new(false)),
+            midi_synth_editor_toggle_request: Arc::new(AtomicBool::new(false)),
+            midi_sampler_editor_toggle_request: Arc::new(AtomicBool::new(false)),
+            midi_fx_preset_change_request: Arc::new(AtomicI8::new(0)),
+            active_fx_target: Arc::new(RwLock::new(None)),
             fx_presets: BTreeMap::new(),
-            fx_wet_dry_mixes, // New field initialized here
+            fx_wet_dry_mixes,
             available_fx_presets: Vec::new(),
             available_hosts,
             selected_host_index,
             midi_ports: midi::get_midi_ports()?,
             enabled_midi_ports: BTreeSet::new(),
-            selected_midi_channel: Arc::new(AtomicU8::new(settings.midi_channel)),
+            // CHANGED: Use the renamed setting from `AppSettings`
+            audio_note_channel: Arc::new(AtomicU8::new(settings.audio_note_channel)),
             input_devices,
             output_devices,
             selected_input_device_index: None,
@@ -524,11 +575,51 @@ impl CypherApp {
         }
     }
 
+    pub fn handle_fx_button_click(&mut self, target: fx::InsertionPoint) {
+        let mut active_target = self.active_fx_target.write().unwrap();
+        if self.fx_editor_window_open && *active_target == Some(target) {
+            // If the editor is already open for this specific target, close it.
+            self.fx_editor_window_open = false;
+            *active_target = None;
+        } else {
+            // Otherwise, open the editor and set it to this target.
+            *active_target = Some(target);
+            self.fx_editor_window_open = true;
+        }
+    }
+
+    pub fn handle_synth_editor_button_click(&mut self) {
+        if self.synth_editor_window_open {
+            // If it's already open, just close it.
+            self.synth_editor_window_open = false;
+        } else {
+            // Otherwise, perform the full activation logic.
+            self.synth_editor_window_open = true;
+            self.sample_pad_window_open = false; // Ensure the other window is closed
+            self.send_command(AudioCommand::ActivateSynth);
+            self.send_command(AudioCommand::DeactivateSampler);
+        }
+    }
+
+    pub fn handle_sampler_pads_button_click(&mut self) {
+        if self.sample_pad_window_open {
+            // If it's already open, just close it.
+            self.sample_pad_window_open = false;
+        } else {
+            // Otherwise, perform the full activation logic.
+            self.sample_pad_window_open = true;
+            self.synth_editor_window_open = false; // Ensure the other window is closed
+            self.send_command(AudioCommand::ActivateSampler);
+            self.send_command(AudioCommand::DeactivateSynth);
+        }
+    }
+
     pub fn post_new(mut app: Self) -> Result<Self> {
         app.rescan_asset_library();
         app.rescan_available_themes();
         app.rescan_chord_styles();
         app.rescan_fx_presets();
+        app.rescan_atmo_presets();
 
         // Load first available chord style if none is selected
         let style_to_load = app.available_chord_styles.first().map(|(_, path)| path.clone());
@@ -551,6 +642,16 @@ impl CypherApp {
         for port_name in &app.settings.midi_port_names {
             app.enabled_midi_ports.insert(port_name.clone());
         }
+
+        // NEW: Backwards compatibility for old settings files.
+        // If the control channels map is empty but ports are enabled, populate the map with a default.
+        if app.settings.midi_device_control_channels.is_empty() && !app.enabled_midi_ports.is_empty() {
+            for port_name in &app.enabled_midi_ports {
+                // Default to channel 10 (9-indexed) for control to avoid clash with default audio channel 1.
+                app.settings.midi_device_control_channels.insert(port_name.clone(), 9);
+            }
+        }
+
 
         if let Err(e) = app.start_audio() {
             app.audio_settings_status =
@@ -738,16 +839,29 @@ impl CypherApp {
             let presets_dir = config_dir.join("SynthPresets");
             let kits_dir = config_dir.join("Kits");
             let sessions_dir = config_dir.join("Sessions");
+            let soundscapes_dir = samples_dir.join("Soundscapes");
 
-            for entry in WalkDir::new(&samples_dir).into_iter().filter_map(|e| e.ok()) {
-                if entry.file_type().is_file()
-                    && entry.path().extension().map_or(false, |e| e == "wav")
-                {
-                    if let Ok(relative_path) = entry.path().strip_prefix(&samples_dir) {
-                        let segments: Vec<String> = relative_path
-                            .iter()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .collect();
+            // Ensure the dedicated Soundscapes directory exists
+            if !soundscapes_dir.exists() {
+                fs::create_dir_all(&soundscapes_dir).ok();
+            }
+
+            // --- Scan for normal samples, EXCLUDING the Soundscapes folder ---
+            for entry in WalkDir::new(&samples_dir)
+                .min_depth(1) // Start inside the Samples dir
+                .into_iter()
+                .filter_entry(|e| e.path() != soundscapes_dir) // Skip the Soundscapes folder itself
+                .filter_map(|e| e.ok())
+            {
+                if let Ok(relative_path) = entry.path().strip_prefix(&samples_dir) {
+                    let segments: Vec<String> = relative_path
+                        .iter()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .collect();
+
+                    if entry.file_type().is_file()
+                        && entry.path().extension().map_or(false, |e| e == "wav")
+                    {
                         if let Some(sample_ref) = SampleRef::new(entry.path().to_path_buf()) {
                             self.asset_library
                                 .sample_root
@@ -756,6 +870,28 @@ impl CypherApp {
                     }
                 }
             }
+
+            // --- Scan ONLY the Soundscapes folder for draggable folders ---
+            if soundscapes_dir.is_dir() {
+                for entry in WalkDir::new(&soundscapes_dir)
+                    .min_depth(1)
+                    .max_depth(1) // Do not recurse into subdirectories
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    if entry.file_type().is_dir() {
+                        // We add these to the root of the sample library for the UI to find.
+                        let segments = vec![entry.file_name().to_string_lossy().to_string()];
+                        if let Some(folder_ref) = crate::asset::FolderRef::new(entry.path()) {
+                            self.asset_library
+                                .sample_root
+                                .insert_asset(&segments, Asset::Folder(folder_ref));
+                        }
+                    }
+                }
+            }
+
+            // Scan for synth presets
             for entry in WalkDir::new(&presets_dir).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file()
                     && entry.path().extension().map_or(false, |e| e == "json")
@@ -773,6 +909,8 @@ impl CypherApp {
                     }
                 }
             }
+
+            // Scan for kits
             for entry in WalkDir::new(&kits_dir).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file()
                     && entry.path().extension().map_or(false, |e| e == "json")
@@ -790,6 +928,8 @@ impl CypherApp {
                     }
                 }
             }
+
+            // Scan for sessions
             if sessions_dir.is_dir() {
                 for entry in WalkDir::new(&sessions_dir)
                     .min_depth(1)
@@ -906,6 +1046,30 @@ impl CypherApp {
         self.available_fx_presets.sort_by(|a, b| a.0.cmp(&b.0));
     }
 
+    pub fn rescan_atmo_presets(&mut self) {
+        self.available_atmo_presets.clear();
+        if let Some(config_dir) = settings::get_config_dir() {
+            let atmo_dir = config_dir.join("Atmospheres");
+            if !atmo_dir.exists() {
+                fs::create_dir_all(&atmo_dir).ok();
+            }
+
+            if atmo_dir.is_dir() {
+                for entry in WalkDir::new(atmo_dir).into_iter().filter_map(|e| e.ok()) {
+                    if entry.file_type().is_file()
+                        && entry.path().extension().map_or(false, |e| e == "json")
+                    {
+                        if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                            self.available_atmo_presets
+                                .push((name.to_string(), entry.path().to_path_buf()));
+                        }
+                    }
+                }
+            }
+        }
+        self.available_atmo_presets.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
     pub fn load_chord_style(&mut self, path: &Path) {
         if let Ok(json_string) = fs::read_to_string(path) {
             if let Ok(style) = serde_json::from_str::<ChordStyle>(&json_string) {
@@ -980,7 +1144,8 @@ impl CypherApp {
             audio_consumer,
             pad_event_producer,
             sample_rate.unwrap_or(48000) as f32,
-            self.selected_midi_channel.clone(),
+            // CHANGED: Pass the UI's atomic channel reference
+            self.audio_note_channel.clone(),
             self.playing_pads.clone(),
             self.track_mixer_state.clone(),
             self.peak_meters.clone(),
@@ -1002,13 +1167,20 @@ impl CypherApp {
             self.synth_master_peak_meter.clone(),
             engine_params,
             self.settings.bpm_rounding,
+            self.tempo_multiplier.clone(),
             self.transport_is_playing.clone(),
             self.should_toggle_record_from_midi.clone(),
             self.should_clear_all_from_midi.clone(),
             self.midi_cc_values.clone(),
-            self.fx_wet_dry_mixes.clone(), // Pass a clone of the new map
+            self.fx_wet_dry_mixes.clone(),
+            self.atmo_master_volume.clone(),
+            self.atmo_layer_volumes.clone(),
+            self.atmo_xy_coords.clone(),
+            self.atmo_peak_meter.clone(),
         );
         self.looper_states = looper_states;
+        self.master_looper_index = engine.master_looper_index.clone();
+        self.tempo_multiplier = engine.tempo_multiplier.clone();
         self.transport_playhead = engine.transport_playhead.clone();
         self.transport_len_samples = engine.transport_len_samples.clone();
         self.transport_is_playing = engine.transport_is_playing.clone();
@@ -1154,12 +1326,17 @@ impl CypherApp {
                 // Check if this port's name is in our set of enabled ports.
                 if self.enabled_midi_ports.contains(port_name) {
                     println!("Attempting to connect to enabled MIDI port: {}", port_name);
+                    // CHANGED: Pass the new settings to the connect_midi function
                     match midi::connect_midi(
                         sender.clone(),
                         self.live_midi_notes.clone(),
                         port.clone(),
-                        port_name.clone(), // Pass the port name to the connection function
+                        port_name.clone(),
+                        self.audio_note_channel.load(Ordering::Relaxed),
+                        self.settings.midi_device_control_channels.clone(),
+                        self.settings.relative_encoder_multiplier,
                         self.midi_mappings.clone(),
+                        self.midi_mapping_modes.clone(),
                         self.midi_learn_target.clone(),
                         self.last_midi_cc_message.clone(),
                         self.midi_cc_values.clone(),
@@ -1168,7 +1345,17 @@ impl CypherApp {
                         self.midi_timer_should_exit.clone(),
                         self.should_clear_all_from_midi.clone(),
                         self.fx_presets.clone(),
-                        self.fx_wet_dry_mixes.clone(), // **FIX**: Pass the persistent atomics
+                        self.fx_wet_dry_mixes.clone(),
+                        self.atmo_master_volume.clone(),
+                        self.atmo_layer_volumes.clone(),
+                        self.atmo_xy_coords.clone(),
+                        self.active_fx_target.clone(),
+                        self.midi_fx_editor_toggle_request.clone(),
+                        self.midi_atmo_editor_toggle_request.clone(),
+                        self.midi_synth_editor_toggle_request.clone(),
+                        self.midi_sampler_editor_toggle_request.clone(),
+                        self.midi_fx_preset_change_request.clone(),
+                        self.midi_mapping_inversions.clone(),
                     ) {
                         Ok((conn, handle)) => {
                             self._midi_connections.push(conn);
@@ -1201,11 +1388,16 @@ impl CypherApp {
             .map(|(name, _)| name.clone());
         self.settings.sample_rate = self.sample_rates.get(self.selected_sample_rate_index).copied();
         self.settings.buffer_size = self.buffer_sizes.get(self.selected_buffer_size_index).copied();
-        self.settings.midi_channel = self.selected_midi_channel.load(Ordering::Relaxed);
+        // CHANGED: Save the new settings fields
+        self.settings.audio_note_channel = self.audio_note_channel.load(Ordering::Relaxed);
+        // The `midi_device_control_channels` map is already up-to-date in `self.settings`
+        // from the UI, so no extra step is needed here.
         self.settings.input_latency_compensation_ms =
             self.input_latency_compensation_ms.load(Ordering::Relaxed) as f32 / 100.0;
 
         self.settings.midi_mappings = self.midi_mappings.read().unwrap().clone();
+        self.settings.midi_mapping_modes = self.midi_mapping_modes.read().unwrap().clone();
+        self.settings.midi_mapping_inversions = self.midi_mapping_inversions.read().unwrap().clone();
 
         settings::save_settings(&mut self.settings);
         self.bpm_rounding_setting_changed_unapplied = false;
@@ -1219,7 +1411,7 @@ impl CypherApp {
         }
     }
 
-    fn load_and_resample_wav_file(&self, path: &Path, target_sr: f32) -> Result<Vec<f32>> {
+    pub fn load_and_resample_wav_file(&self, path: &Path, target_sr: f32) -> Result<Vec<f32>> {
         let file = BufReader::new(File::open(path)?);
         let source = Decoder::new(file)?;
         let source_sr = source.sample_rate() as f32;
@@ -1805,8 +1997,18 @@ impl CypherApp {
 
     pub fn initialize_new_preset(&mut self) {
         self.settings.last_synth_preset = None;
-        self.current_session_path = None; // A new preset means it's an unsaved session
-        self.clear_all_fx_racks();
+        self.current_session_path = None;
+
+        // Only clear the FX racks for the two synth engines.
+        for i in 0..2 {
+            let point = fx::InsertionPoint::Synth(i);
+            self.fx_presets.remove(&point);
+            self.send_command(AudioCommand::ClearFxRack(point));
+            if let Some(mix) = self.fx_wet_dry_mixes.get(&point) {
+                mix.store(0, Ordering::Relaxed);
+            }
+        }
+        // --- END CORRECTION ---
 
         for engine_index in 0..2 {
             self.engine_states[engine_index] = EngineState::new_wavetable();
@@ -2107,17 +2309,22 @@ impl CypherApp {
         }
 
         // 4. Gather all the data for the session file.
-        let mixer_state = MixerState {
-            tracks: self.track_mixer_state.read().unwrap().tracks,
-            master_volume_m_u32: self.master_volume.load(Ordering::Relaxed),
-            limiter_is_active: self.limiter_is_active.load(Ordering::Relaxed),
-            limiter_threshold_m_u32: self.limiter_threshold.load(Ordering::Relaxed),
-            limiter_release_mode: self.limiter_release_mode,
-            limiter_release_ms_m_u32: self.limiter_release_ms.load(Ordering::Relaxed),
-            limiter_release_sync_rate_m_u32: self
-                .limiter_release_sync_rate
-                .load(Ordering::Relaxed),
-        };
+        let mixer_state = {
+            let live_mixer_state = self.track_mixer_state.read().unwrap();
+            MixerState {
+                tracks: live_mixer_state.tracks,
+                metronome: live_mixer_state.metronome,
+                master_volume_m_u32: self.master_volume.load(Ordering::Relaxed),
+                limiter_is_active: self.limiter_is_active.load(Ordering::Relaxed),
+                limiter_threshold_m_u32: self.limiter_threshold.load(Ordering::Relaxed),
+                limiter_release_mode: self.limiter_release_mode,
+                limiter_release_ms_m_u32: self.limiter_release_ms.load(Ordering::Relaxed),
+                limiter_release_sync_rate_m_u32: self
+                    .limiter_release_sync_rate
+                    .load(Ordering::Relaxed),
+            }
+        }; // `live_mixer_state` is dropped here, releasing the lock.
+
 
         let synth_preset_path = self.settings.last_synth_preset.as_ref().and_then(|p| {
             p.strip_prefix(&config_dir)
@@ -2139,16 +2346,26 @@ impl CypherApp {
             })
             .collect();
 
+        let looper_cycles = std::array::from_fn(|i| {
+            self.looper_states[i].get_length_in_cycles()
+        });
+
+
         let session_data = SessionData {
             mixer_state,
             synth_preset_path,
             sampler_kit_path,
+            atmo_preset: self.atmo.clone(),
+            atmo_xy_coords: self.atmo_xy_coords.load(Ordering::Relaxed),
             is_input_armed: self.audio_input_is_armed.load(Ordering::Relaxed),
             is_input_monitored: self.audio_input_is_monitored.load(Ordering::Relaxed),
             transport_len_samples: self.transport_len_samples.load(Ordering::Relaxed),
             original_sample_rate: self.active_sample_rate,
             fx_presets: self.fx_presets.clone(),
             fx_wet_dry_mixes,
+            looper_cycles,
+            tempo_multiplier: self.tempo_multiplier.load(Ordering::Relaxed),
+            master_looper_index: self.master_looper_index.load(Ordering::Relaxed),
         };
 
         // 5. Serialize the data and write the `session.json` file.
@@ -2193,6 +2410,7 @@ impl CypherApp {
                 fx::InsertionPoint::Sampler,
                 fx::InsertionPoint::Input,
                 fx::InsertionPoint::Master,
+                fx::InsertionPoint::Atmo,
             ],
         ]
             .concat();
@@ -2271,6 +2489,46 @@ impl CypherApp {
             }
         }
 
+        // --- Atmo Preset Restoration ---
+        self.atmo = session_data.atmo_preset;
+        self.atmo_xy_coords.store(session_data.atmo_xy_coords, Ordering::Relaxed);
+        for (scene_index, scene) in self.atmo.scenes.iter().enumerate() {
+            // Send scene parameters to audio thread
+            self.send_command(AudioCommand::SetAtmoScene {
+                scene_index,
+                scene: scene.clone(),
+            });
+
+            for (layer_index, layer) in scene.layers.iter().enumerate() {
+                if let Some(relative_path) = &layer.sample_folder_path {
+                    if let Some(folder_path) = self.resolve_path(relative_path) {
+                        if folder_path.is_dir() {
+                            let samples: Vec<(PathBuf, u32)> = WalkDir::new(folder_path)
+                                .into_iter()
+                                .filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    e.file_type().is_file()
+                                        && e.path().extension().map_or(false, |ext| ext == "wav")
+                                })
+                                .filter_map(|e| {
+                                    let path = e.path().to_path_buf();
+                                    hound::WavReader::open(&path).ok().map(|reader| (path, reader.duration()))
+                                })
+                                .collect();
+
+                            if !samples.is_empty() {
+                                self.send_command(AudioCommand::LoadAtmoLayer {
+                                    scene_index,
+                                    layer_index,
+                                    samples,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         self.audio_input_is_armed
             .store(session_data.is_input_armed, Ordering::Relaxed);
         self.audio_input_is_monitored
@@ -2283,12 +2541,13 @@ impl CypherApp {
             self.send_command(AudioCommand::LoadFxRack(*insertion_point, preset.clone()));
         }
 
-        // **NEW**: Load the saved wet/dry values into our persistent atomics
+        // Load the saved wet/dry values into our persistent atomics
         for (point, value) in session_data.fx_wet_dry_mixes {
             if let Some(atomic_val) = self.fx_wet_dry_mixes.get(&point) {
                 atomic_val.store((value * 1_000_000.0) as u32, Ordering::Relaxed);
             }
         }
+
 
         for i in 0..NUM_LOOPERS {
             let loop_filename = format!("loop_{}.wav", i);
@@ -2298,25 +2557,271 @@ impl CypherApp {
                     looper_index: i,
                     path: loop_path,
                     original_sample_rate: session_data.original_sample_rate,
+                    length_in_cycles: session_data.looper_cycles[i],
                 });
             }
         }
+
+        // Send the transport length and tempo state AFTER queuing the loops
         self.send_command(AudioCommand::SetTransportLen(
             session_data.transport_len_samples,
         ));
+        self.send_command(AudioCommand::SetTempoState {
+            master_index: session_data.master_looper_index,
+            multiplier: session_data.tempo_multiplier,
+        });
+
         self.current_session_path = Some(path.to_path_buf());
 
         self.reconnect_midi().ok();
+    }
+
+    pub fn save_atmo_preset(&mut self) {
+        if let Some(config_dir) = settings::get_config_dir() {
+            let atmo_dir = config_dir.join("Atmospheres");
+            let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+            let filename = format!("Atmos_{}", timestamp);
+
+            if let Some(path) = FileDialog::new()
+                .add_filter("json", &["json"])
+                .set_directory(&atmo_dir)
+                .set_file_name(&filename)
+                .save_file()
+            {
+                // Before saving, update the preset struct with the current puck position
+                self.atmo.xy_coords = self.atmo_xy_coords.load(Ordering::Relaxed);
+                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                    self.atmo.name = name.to_string();
+                }
+
+                if let Ok(json) = serde_json::to_string_pretty(&self.atmo) {
+                    if let Err(e) = fs::write(&path, json) {
+                        eprintln!("Failed to save atmosphere preset: {}", e);
+                    } else {
+                        // Success, so rescan the presets
+                        self.rescan_atmo_presets();
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn load_atmo_preset_from_path(&mut self, path: &Path) {
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(config_dir) = settings::get_config_dir() {
+            config_dir.join(path)
+        } else {
+            path.to_path_buf() // Fallback
+        };
+
+        if let Ok(json_string) = fs::read_to_string(&absolute_path) {
+            match serde_json::from_str::<AtmoPreset>(&json_string) {
+                Ok(loaded_preset) => {
+                    self.atmo = loaded_preset;
+                    // Restore the puck position from the preset
+                    self.atmo_xy_coords.store(self.atmo.xy_coords, Ordering::Relaxed);
+
+                    // Now, we must re-load all the samples for the new preset
+                    for (scene_index, scene) in self.atmo.scenes.iter().enumerate() {
+                        self.send_command(AudioCommand::SetAtmoScene {
+                            scene_index,
+                            scene: scene.clone(),
+                        });
+                        for (layer_index, layer) in scene.layers.iter().enumerate() {
+                            if let Some(folder_path_rel) = &layer.sample_folder_path {
+                                if let Some(folder_path_abs) = self.resolve_path(folder_path_rel) {
+                                    let samples: Vec<(PathBuf, u32)> = WalkDir::new(folder_path_abs)
+                                        .into_iter()
+                                        .filter_map(|e| e.ok())
+                                        .filter(|e| {
+                                            e.file_type().is_file()
+                                                && e.path().extension().map_or(false, |ext| ext == "wav")
+                                        })
+                                        .filter_map(|e| {
+                                            let path = e.path().to_path_buf();
+                                            hound::WavReader::open(&path).ok().map(|reader| (path, reader.duration()))
+                                        })
+                                        .collect();
+
+                                    if !samples.is_empty() {
+                                        self.send_command(AudioCommand::LoadAtmoLayer { scene_index, layer_index, samples });
+                                    }
+                                }
+                            } else {
+                                // If the path is None, clear the layer on the audio thread
+                                self.send_command(AudioCommand::ClearAtmoLayer { scene_index, layer_index });
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to parse atmosphere preset: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Traverses the `src` directory, concatenates all `.rs` files into a single string,
+    /// and prompts the user to save it as a .txt file.
+    pub fn export_codebase_to_txt(&self) {
+        println!("Starting codebase export...");
+
+        let separator = "\n".repeat(15);
+        let mut combined_code = String::new();
+
+        // 1. Add Cargo.toml first for context
+        let cargo_toml_path = PathBuf::from("Cargo.toml");
+        if cargo_toml_path.exists() {
+            let header = format!("// FILE: {}\n// {}\n\n",
+                                 cargo_toml_path.display(),
+                                 "=".repeat(cargo_toml_path.display().to_string().len() + 8)
+            );
+            combined_code.push_str(&header);
+
+            match fs::read_to_string(&cargo_toml_path) {
+                Ok(content) => {
+                    combined_code.push_str(&content);
+                }
+                Err(e) => {
+                    let error_msg = format!("// Error reading file {}: {}\n", cargo_toml_path.display(), e);
+                    eprintln!("{}", error_msg);
+                    combined_code.push_str(&error_msg);
+                }
+            }
+        }
+
+        // 2. Find all .rs files in the src directory and sort them for consistent output.
+        let root_path = PathBuf::from("src");
+        let mut rs_files: Vec<PathBuf> = WalkDir::new(&root_path)
+            .into_iter()
+            .filter_map(Result::ok) // Ignore errors
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+            .map(|e| e.into_path())
+            .collect();
+
+        rs_files.sort(); // Sort paths alphabetically
+
+        // 3. Read each .rs file and append its content to the main string.
+        for file_path in rs_files {
+            // Add a separator before every new file, as there will always be a preceding file.
+            combined_code.push_str(&separator);
+
+            // Try to get a clean, relative path for the header
+            let display_path = file_path.strip_prefix(&root_path)
+                .map(|p| root_path.join(p))
+                .unwrap_or_else(|_| file_path.clone());
+
+            let header = format!("// FILE: {}\n// {}\n\n",
+                                 display_path.display(),
+                                 "=".repeat(display_path.display().to_string().len() + 8)
+            );
+            combined_code.push_str(&header);
+
+            match fs::read_to_string(&file_path) {
+                Ok(content) => {
+                    combined_code.push_str(&content);
+                }
+                Err(e) => {
+                    let error_msg = format!("// Error reading file {}: {}\n", file_path.display(), e);
+                    eprintln!("{}", error_msg);
+                    combined_code.push_str(&error_msg);
+                }
+            }
+        }
+
+        // 4. Open a "Save File" dialog.
+        if !combined_code.is_empty() {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("cypher_codebase.txt")
+                .add_filter("Text File", &["txt"])
+                .save_file()
+            {
+                match fs::write(&path, combined_code) {
+                    Ok(_) => println!("Codebase successfully exported to {}", path.display()),
+                    Err(e) => eprintln!("Failed to save codebase file: {}", e),
+                }
+            } else {
+                println!("Codebase export cancelled by user.");
+            }
+        } else {
+            eprintln!("No files found to export.");
+        }
     }
 }
 
 impl eframe::App for CypherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // --- State Updates ---
-        // Must be called before any UI is drawn to ensure the display is up to date.
-        self.update_theory_display();
+                self.update_theory_display();
         //ctx.set_debug_on_hover(true); // <-- Uncomment for visual debugging of panels
 
+        // --- Handle MIDI FX Preset Change ---
+        let direction = self.midi_fx_preset_change_request.swap(0, Ordering::Relaxed);
+        if direction != 0 {
+            if let Some(target) = *self.active_fx_target.read().unwrap() {
+                if !self.available_fx_presets.is_empty() {
+                    let current_preset_name = self.fx_presets.get(&target).map(|p| p.name.clone());
+
+                    let current_index = current_preset_name.and_then(|name| {
+                        self.available_fx_presets.iter().position(|(n, _)| n == &name)
+                    });
+
+                    let new_index = match current_index {
+                        Some(idx) => {
+                            let num_presets = self.available_fx_presets.len();
+                            // Cast the i8 direction to isize for the addition.
+                            let new_idx_isize = idx as isize + direction as isize;
+                            // Clamp the result to stay within the valid index range.
+                            new_idx_isize.clamp(0, (num_presets - 1) as isize) as usize
+                        }
+                        None => if direction > 0 { 0 } else { self.available_fx_presets.len() - 1 },
+                    };
+
+                    if let Some((_, path)) = self.available_fx_presets.get(new_index) {
+                        if let Ok(json_string) = fs::read_to_string(path) {
+                            if let Ok(mut loaded_preset) = serde_json::from_str::<fx::FxPreset>(&json_string) {
+                                // Overwrite the preset's internal name with the filename to ensure
+                                // the next lookup will succeed.
+                                if let Some(name_from_file) = path.file_stem().and_then(|s| s.to_str()) {
+                                    loaded_preset.name = name_from_file.to_string();
+                                }
+                                self.fx_presets.insert(target, loaded_preset.clone());
+                                self.send_command(AudioCommand::LoadFxRack(target, loaded_preset));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // --- Handle MIDI FX Editor Toggle ---
+        let point_to_toggle = self.midi_fx_editor_toggle_request.write().unwrap().take();
+        
+        if let Some(point) = point_to_toggle {
+            self.handle_fx_button_click(point);
+        }
+
+        // --- Handle MIDI Atmo Editor Toggle ---
+        if self.midi_atmo_editor_toggle_request.swap(false, Ordering::Relaxed) {
+            self.atmo_window_open = !self.atmo_window_open;
+        }
+
+        // --- Handle MIDI Synth/Sampler Editor Toggles ---
+        if self
+            .midi_synth_editor_toggle_request
+            .swap(false, Ordering::Relaxed)
+        {
+            self.handle_synth_editor_button_click();
+        }
+        if self
+            .midi_sampler_editor_toggle_request
+            .swap(false, Ordering::Relaxed)
+        {
+            self.handle_sampler_pads_button_click();
+        }
+        
         if self.should_clear_all_from_midi.swap(false, Ordering::Relaxed) {
             self.clear_all_fx_racks(); // Clear UI state
             self.send_command(AudioCommand::ClearAllAndPlay); // Command audio thread
@@ -2426,6 +2931,11 @@ impl eframe::App for CypherApp {
             self.master_peak_meter.load(Ordering::Relaxed) as f32 / u32::MAX as f32;
         self.displayed_master_peak_level =
             (self.displayed_master_peak_level * 0.95).max(new_master_peak);
+
+        let new_atmo_peak =
+            self.atmo_peak_meter.load(Ordering::Relaxed) as f32 / u32::MAX as f32;
+        self.displayed_atmo_peak_level =
+            (self.displayed_atmo_peak_level * 0.95).max(new_atmo_peak);
 
         let new_gr = self.gain_reduction_db.load(Ordering::Relaxed) as f32 / 24_000_000.0;
         self.displayed_gain_reduction = (self.displayed_gain_reduction * 0.92).max(new_gr);

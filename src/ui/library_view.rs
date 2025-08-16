@@ -1,13 +1,15 @@
+// src/ui/library_view.rs
+
 use crate::app::{CypherApp, LibraryView};
-use crate::asset::{Asset, AssetRef, SampleRef};
+use crate::asset::{Asset, AssetRef, FolderRef, SampleRef};
 use crate::audio_engine::AudioCommand;
 use crate::sampler::{SamplerKit, SamplerPadFxSettings, SamplerPadSettings};
 use crate::settings;
 use crate::synth::AdsrSettings;
 use crate::ui;
 use egui::{
-    epaint, vec2, Align2, Button, CornerRadius, DragAndDrop, Frame, Id,
-     Margin, Response, RichText, ScrollArea, Sense, Slider, Stroke, Ui, Window,
+    epaint, vec2, Align2, Button, CornerRadius, DragAndDrop, Frame, Id, Margin, Response,
+    RichText, ScrollArea, Sense, Slider, Stroke, Ui, Window,
 };
 use rfd::FileDialog;
 use std::cmp::max;
@@ -44,11 +46,15 @@ fn slider_to_time(value: f32, max_time: f32) -> f32 {
     value.powf(4.0) * max_time
 }
 
-
 pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
     let frame = Frame::new()
         .fill(app.theme.library.panel_background)
-        .inner_margin(Margin { left: 0, right: 0, top: 8, bottom: 8 });
+        .inner_margin(Margin {
+            left: 0,
+            right: 0,
+            top: 8,
+            bottom: 8,
+        });
 
     frame.show(ui, |ui| {
         ui.set_min_height(250.0);
@@ -58,44 +64,136 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
 
             let rescan_button = Button::new("Rescan Library")
                 .min_size(button_min_size)
-                .fill(app.theme.library.button_bg);
-            if ui.add(rescan_button).clicked() {
+                .fill(app.theme.library.button_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(rescan_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
                 app.rescan_asset_library();
                 app.rescan_chord_styles();
             }
             ui.separator();
 
             // Tab Buttons
-            let sample_bg = if app.library_view == LibraryView::Samples { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            let samples_button = Button::new("Samples").min_size(button_min_size).fill(sample_bg);
-            if ui.add(samples_button).clicked() { app.library_view = LibraryView::Samples; app.library_path.clear(); }
+            let sample_bg = if app.library_view == LibraryView::Samples {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let samples_button = Button::new("Samples")
+                .min_size(button_min_size)
+                .fill(sample_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(samples_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::Samples;
+                app.library_path.clear();
+            }
 
-            let synth_bg = if app.library_view == LibraryView::Synths { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            let synths_button = Button::new("Synths").min_size(button_min_size).fill(synth_bg);
-            if ui.add(synths_button).clicked() { app.library_view = LibraryView::Synths; app.library_path.clear(); }
+            let synth_bg = if app.library_view == LibraryView::Synths {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let synths_button = Button::new("Synths")
+                .min_size(button_min_size)
+                .fill(synth_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(synths_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::Synths;
+                app.library_path.clear();
+            }
 
-            let kit_bg = if app.library_view == LibraryView::Kits { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            let kits_button = Button::new("Kits").min_size(button_min_size).fill(kit_bg);
-            if ui.add(kits_button).clicked() { app.library_view = LibraryView::Kits; app.library_path.clear(); }
+            let kit_bg = if app.library_view == LibraryView::Kits {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let kits_button = Button::new("Kits")
+                .min_size(button_min_size)
+                .fill(kit_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(kits_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::Kits;
+                app.library_path.clear();
+            }
 
-            let session_bg = if app.library_view == LibraryView::Sessions { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            let sessions_button = Button::new("Sessions").min_size(button_min_size).fill(session_bg);
-            if ui.add(sessions_button).clicked() { app.library_view = LibraryView::Sessions; app.library_path.clear(); }
+            let session_bg = if app.library_view == LibraryView::Sessions {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let sessions_button = Button::new("Sessions")
+                .min_size(button_min_size)
+                .fill(session_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(sessions_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::Sessions;
+                app.library_path.clear();
+            }
 
-            let keys_bg = if app.library_view == LibraryView::EightyEightKeys { app.theme.library.tab_active_bg } else { app.theme.library.tab_inactive_bg };
-            let keys_button = Button::new("88Keys").min_size(button_min_size).fill(keys_bg);
-            if ui.add(keys_button).clicked() { app.library_view = LibraryView::EightyEightKeys; app.library_path.clear(); }
+            let soundscapes_bg = if app.library_view == LibraryView::Soundscapes {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let soundscapes_button = Button::new("Soundscapes")
+                .min_size(button_min_size)
+                .fill(soundscapes_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(soundscapes_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::Soundscapes;
+                app.library_path.clear();
+            }
 
+            let keys_bg = if app.library_view == LibraryView::EightyEightKeys {
+                app.theme.library.tab_active_bg
+            } else {
+                app.theme.library.tab_inactive_bg
+            };
+            let keys_button = Button::new("88Keys")
+                .min_size(button_min_size)
+                .fill(keys_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add(keys_button);
+            if response.clicked()
+                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                app.library_view = LibraryView::EightyEightKeys;
+                app.library_path.clear();
+            }
 
-            // --- Path/Back button only for asset views ---
-            if app.library_view != LibraryView::EightyEightKeys {
+            // --- Path/Back button only for asset views that support navigation ---
+            if app.library_view != LibraryView::EightyEightKeys
+                && app.library_view != LibraryView::Soundscapes
+            {
                 ui.separator();
 
                 if !app.library_path.is_empty() {
                     let back_button = Button::new("⬅ Back")
                         .min_size(button_min_size)
-                        .fill(app.theme.library.button_bg);
-                    if ui.add(back_button).clicked() {
+                        .fill(app.theme.library.button_bg)
+                        .sense(Sense::click_and_drag());
+                    let response = ui.add(back_button);
+                    if response.clicked()
+                        || (response.drag_stopped()
+                        && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+                    {
                         app.library_path.pop();
                     }
                 }
@@ -106,23 +204,29 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
                         LibraryView::Kits => "Kits",
                         LibraryView::Sessions => "Sessions",
                         _ => "", // Should not happen
-                    }.to_string()
+                    }
+                        .to_string()
                 } else {
                     app.library_path.join(" / ")
                 };
-                ui.label(RichText::new(format!("Browsing: {}", path_str)).color(app.theme.library.text_color));
+                ui.label(
+                    RichText::new(format!("Browsing: {}", path_str))
+                        .color(app.theme.library.text_color),
+                );
             }
         });
         ui.separator();
 
         // --- MAIN CONTENT AREA ---
         if app.library_view == LibraryView::EightyEightKeys {
-            ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-                ui::eighty_eight_keys_view::draw_88_keys_panel(app, ui);
-            });
+            ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui::eighty_eight_keys_view::draw_88_keys_panel(app, ui);
+                });
         } else {
             let category_root = match app.library_view {
-                LibraryView::Samples => &app.asset_library.sample_root,
+                LibraryView::Samples | LibraryView::Soundscapes => &app.asset_library.sample_root,
                 LibraryView::Synths => &app.asset_library.synth_root,
                 LibraryView::Kits => &app.asset_library.kit_root,
                 LibraryView::Sessions => &app.asset_library.session_root,
@@ -144,75 +248,131 @@ pub fn draw_library_panel(app: &mut CypherApp, ui: &mut Ui) {
             let mut session_to_load: Option<PathBuf> = None;
             let theme = app.theme.clone();
 
-            ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                const CARD_WIDTH: f32 = 100.0;
-                const SPACING: f32 = 20.0;
-                const SCROLL_RESERVATION_WIDTH: f32 = CARD_WIDTH * 2.0 + SPACING;
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    const CARD_WIDTH: f32 = 100.0;
+                    const SPACING: f32 = 20.0;
+                    const SCROLL_RESERVATION_WIDTH: f32 = CARD_WIDTH * 2.0 + SPACING;
 
-                let total_items = current_folder.subfolders.len() + current_folder.assets.len();
-                if total_items == 0 {
-                    return;
-                }
+                    let total_items = current_folder.subfolders.len() + current_folder.assets.len();
+                    if total_items == 0 {
+                        return;
+                    }
 
-                // Calculate number of columns based on available width, reserving space on the right
-                let available_width = ui.available_width();
-                let effective_width = (available_width - SCROLL_RESERVATION_WIDTH).max(CARD_WIDTH);
-                let num_cols = max(1, ((effective_width + SPACING) / (CARD_WIDTH + SPACING)).floor() as usize);
-                let mut item_index = 0;
+                    // Calculate number of columns based on available width, reserving space on the right
+                    let available_width = ui.available_width();
+                    let effective_width = (available_width - SCROLL_RESERVATION_WIDTH).max(CARD_WIDTH);
+                    let num_cols = max(
+                        1,
+                        ((effective_width + SPACING) / (CARD_WIDTH + SPACING)).floor() as usize,
+                    );
+                    let mut item_index = 0;
 
-                egui::Grid::new("responsive_asset_grid")
-                    .spacing([SPACING, SPACING])
-                    .show(ui, |ui| {
-                        for folder_name in current_folder.subfolders.keys() {
-                            let response = draw_folder_card(ui, folder_name, &theme);
+                    egui::Grid::new("responsive_asset_grid")
+                        .spacing([SPACING, SPACING])
+                        .show(ui, |ui| {
+                            // Only show clickable sub-folders if we are NOT in Soundscapes view
+                            if app.library_view != LibraryView::Soundscapes {
+                                for folder_name in current_folder.subfolders.keys() {
+                                    let response = draw_folder_card(ui, folder_name, &theme);
 
-                            let is_clicked = response.clicked()
-                                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
+                                    let is_clicked = response.clicked()
+                                        || (response.drag_stopped()
+                                        && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
 
-                            if is_clicked {
-                                app.library_path.push(folder_name.clone());
-                            }
-                            item_index += 1;
-                            if item_index % num_cols == 0 {
-                                ui.end_row();
-                            }
-                        }
-
-                        for asset in &current_folder.assets {
-                            let response = match asset {
-                                Asset::Sample(sample_ref) => {
-                                    draw_asset_card(ui, sample_ref, "🎵", asset.clone(), Sense::drag(), &theme)
-                                }
-                                Asset::SynthPreset(preset_ref) => {
-                                    draw_asset_card(ui, preset_ref, "🎹", asset.clone(), Sense::click_and_drag(), &theme)
-                                }
-                                Asset::SamplerKit(kit_ref) => {
-                                    draw_asset_card(ui, kit_ref, "🥁", asset.clone(), Sense::click_and_drag(), &theme)
-                                }
-                                Asset::Session(session_ref) => {
-                                    draw_asset_card(ui, session_ref, "💾", asset.clone(), Sense::click_and_drag(), &theme)
-                                }
-                            };
-
-                            let is_clicked = response.clicked()
-                                || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
-
-                            if is_clicked {
-                                match asset {
-                                    Asset::SynthPreset(preset_ref) => preset_to_load = Some(preset_ref.path().clone()),
-                                    Asset::SamplerKit(kit_ref) => kit_to_load = Some(kit_ref.path().clone()),
-                                    Asset::Session(session_ref) => session_to_load = Some(session_ref.path().clone()),
-                                    _ => {}
+                                    if is_clicked {
+                                        app.library_path.push(folder_name.clone());
+                                    }
+                                    item_index += 1;
+                                    if item_index % num_cols == 0 {
+                                        ui.end_row();
+                                    }
                                 }
                             }
 
-                            item_index += 1;
-                            if item_index % num_cols == 0 {
-                                ui.end_row();
+                            for asset in &current_folder.assets {
+                                // --- Main filtering logic is here ---
+                                let should_draw = match (app.library_view, asset) {
+                                    (LibraryView::Soundscapes, Asset::Folder(_)) => true,
+                                    (LibraryView::Samples, Asset::Sample(_)) => true,
+                                    (LibraryView::Synths, Asset::SynthPreset(_)) => true,
+                                    (LibraryView::Kits, Asset::SamplerKit(_)) => true,
+                                    (LibraryView::Sessions, Asset::Session(_)) => true,
+                                    _ => false, // Don't draw folders in other views, etc.
+                                };
+
+                                if !should_draw {
+                                    continue;
+                                }
+
+                                let response = match asset {
+                                    Asset::Sample(sample_ref) => draw_asset_card(
+                                        ui,
+                                        sample_ref,
+                                        "🎵",
+                                        asset.clone(),
+                                        Sense::drag(),
+                                        &theme,
+                                    ),
+                                    Asset::SynthPreset(preset_ref) => draw_asset_card(
+                                        ui,
+                                        preset_ref,
+                                        "🎹",
+                                        asset.clone(),
+                                        Sense::click_and_drag(),
+                                        &theme,
+                                    ),
+                                    Asset::SamplerKit(kit_ref) => draw_asset_card(
+                                        ui,
+                                        kit_ref,
+                                        "🥁",
+                                        asset.clone(),
+                                        Sense::click_and_drag(),
+                                        &theme,
+                                    ),
+                                    Asset::Session(session_ref) => draw_asset_card(
+                                        ui,
+                                        session_ref,
+                                        "💾",
+                                        asset.clone(),
+                                        Sense::click_and_drag(),
+                                        &theme,
+                                    ),
+                                    Asset::Folder(folder_ref) => draw_folder_asset_card(
+                                        ui,
+                                        folder_ref,
+                                        asset.clone(),
+                                        &theme,
+                                    ),
+                                };
+
+                                let is_clicked = response.clicked()
+                                    || (response.drag_stopped()
+                                    && response.drag_delta().length() < CLICK_DRAG_THRESHOLD);
+
+                                if is_clicked {
+                                    match asset {
+                                        Asset::SynthPreset(preset_ref) => {
+                                            preset_to_load = Some(preset_ref.path().clone())
+                                        }
+                                        Asset::SamplerKit(kit_ref) => {
+                                            kit_to_load = Some(kit_ref.path().clone())
+                                        }
+                                        Asset::Session(session_ref) => {
+                                            session_to_load = Some(session_ref.path().clone())
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                item_index += 1;
+                                if item_index % num_cols == 0 {
+                                    ui.end_row();
+                                }
                             }
-                        }
-                    });
-            });
+                        });
+                });
 
             if let Some(path) = preset_to_load {
                 app.load_preset_from_path(&path);
@@ -242,15 +402,80 @@ fn draw_folder_card(ui: &mut Ui, name: &str, theme: &crate::theme::Theme) -> Res
         } else {
             theme.library.card_bg
         };
-        let frame = Frame::group(ui.style()).fill(fill_color).stroke(visuals.bg_stroke);
+        let frame = Frame::group(ui.style())
+            .fill(fill_color)
+            .stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 
-        let icon_galley = ui.painter().layout_no_wrap("📁".to_string(), egui::FontId::proportional(32.0), theme.library.text_color);
-        let name_galley = ui.painter().layout(name.to_string(), egui::FontId::monospace(12.0), theme.library.text_color, rect.width() - 8.0);
+        let icon_galley = ui.painter().layout_no_wrap(
+            "📁".to_string(),
+            egui::FontId::proportional(32.0),
+            theme.library.text_color,
+        );
+        let name_galley = ui.painter().layout(
+            name.to_string(),
+            egui::FontId::monospace(12.0),
+            theme.library.text_color,
+            rect.width() - 8.0,
+        );
         let icon_pos = egui::pos2(rect.center().x - icon_galley.size().x / 2.0, rect.top() + 12.0);
-        let name_pos = egui::pos2(rect.center().x - name_galley.size().x / 2.0, rect.bottom() - name_galley.size().y - 8.0);
-        ui.painter().galley(icon_pos, icon_galley, theme.library.text_color);
-        ui.painter().galley(name_pos, name_galley, theme.library.text_color);
+        let name_pos = egui::pos2(
+            rect.center().x - name_galley.size().x / 2.0,
+            rect.bottom() - name_galley.size().y - 8.0,
+        );
+        ui.painter()
+            .galley(icon_pos, icon_galley, theme.library.text_color);
+        ui.painter()
+            .galley(name_pos, name_galley, theme.library.text_color);
+    }
+    response
+}
+
+fn draw_folder_asset_card(
+    ui: &mut Ui,
+    folder_ref: &FolderRef,
+    asset_payload: Asset,
+    theme: &crate::theme::Theme,
+) -> Response {
+    let size = vec2(100.0, 80.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::drag());
+
+    if response.drag_started() {
+        DragAndDrop::set_payload(ui.ctx(), asset_payload);
+    }
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let fill_color = if response.hovered() || response.is_pointer_button_down_on() {
+            theme.library.card_hovered_bg
+        } else {
+            theme.library.card_bg
+        };
+        let frame = Frame::group(ui.style())
+            .fill(fill_color)
+            .stroke(visuals.bg_stroke);
+        ui.painter().add(frame.paint(rect));
+
+        let icon_galley = ui.painter().layout_no_wrap(
+            "🗀".to_string(),
+            egui::FontId::proportional(32.0),
+            theme.library.text_color,
+        );
+        let name_galley = ui.painter().layout(
+            folder_ref.name().to_string(),
+            egui::FontId::monospace(12.0),
+            theme.library.text_color,
+            rect.width() - 8.0,
+        );
+        let icon_pos = egui::pos2(rect.center().x - icon_galley.size().x / 2.0, rect.top() + 12.0);
+        let name_pos = egui::pos2(
+            rect.center().x - name_galley.size().x / 2.0,
+            rect.bottom() - name_galley.size().y - 8.0,
+        );
+        ui.painter()
+            .galley(icon_pos, icon_galley, theme.library.text_color);
+        ui.painter()
+            .galley(name_pos, name_galley, theme.library.text_color);
     }
     response
 }
@@ -277,15 +502,31 @@ fn draw_asset_card(
         } else {
             theme.library.card_bg
         };
-        let frame = Frame::group(ui.style()).fill(fill_color).stroke(visuals.bg_stroke);
+        let frame = Frame::group(ui.style())
+            .fill(fill_color)
+            .stroke(visuals.bg_stroke);
         ui.painter().add(frame.paint(rect));
 
-        let icon_galley = ui.painter().layout_no_wrap(icon.to_string(), egui::FontId::proportional(32.0), theme.library.text_color);
-        let name_galley = ui.painter().layout(asset_ref.name().to_string(), egui::FontId::monospace(12.0), theme.library.text_color, rect.width() - 8.0);
+        let icon_galley = ui.painter().layout_no_wrap(
+            icon.to_string(),
+            egui::FontId::proportional(32.0),
+            theme.library.text_color,
+        );
+        let name_galley = ui.painter().layout(
+            asset_ref.name().to_string(),
+            egui::FontId::monospace(12.0),
+            theme.library.text_color,
+            rect.width() - 8.0,
+        );
         let icon_pos = egui::pos2(rect.center().x - icon_galley.size().x / 2.0, rect.top() + 12.0);
-        let name_pos = egui::pos2(rect.center().x - name_galley.size().x / 2.0, rect.bottom() - name_galley.size().y - 8.0);
-        ui.painter().galley(icon_pos, icon_galley, theme.library.text_color);
-        ui.painter().galley(name_pos, name_galley, theme.library.text_color);
+        let name_pos = egui::pos2(
+            rect.center().x - name_galley.size().x / 2.0,
+            rect.bottom() - name_galley.size().y - 8.0,
+        );
+        ui.painter()
+            .galley(icon_pos, icon_galley, theme.library.text_color);
+        ui.painter()
+            .galley(name_pos, name_galley, theme.library.text_color);
     }
     response
 }
@@ -301,11 +542,16 @@ pub fn draw_sample_pad_window(app: &mut CypherApp, ctx: &egui::Context) {
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
             let editor_state_id = Id::new("active_pad_editor");
-            let mut active_pad_editor = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<Option<usize>>(editor_state_id));
+            let mut active_pad_editor =
+                ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<Option<usize>>(editor_state_id));
             let flash_timers_id = Id::new("pad_flash_timers");
-            let mut flash_timers = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<[Option<Instant>; 16]>(flash_timers_id));
+            let mut flash_timers = ui.memory_mut(|m| {
+                *m.data
+                    .get_temp_mut_or_default::<[Option<Instant>; 16]>(flash_timers_id)
+            });
             let trash_mode_id = Id::new("trash_mode");
-            let mut trash_mode = ui.memory_mut(|m| *m.data.get_temp_mut_or_default(trash_mode_id));
+            let mut trash_mode =
+                ui.memory_mut(|m| *m.data.get_temp_mut_or_default(trash_mode_id));
 
             while let Some(triggered_pad_index) = app.pad_event_consumer.pop() {
                 if triggered_pad_index < 16 {
@@ -316,20 +562,30 @@ pub fn draw_sample_pad_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             ui.horizontal(|ui| {
                 let trash_button_text = RichText::new("🗑 Trash Mode").monospace();
-                let trash_button = egui::Button::new(trash_button_text).fill(if trash_mode { app.theme.sampler_pad_window.trash_mode_active_bg } else { app.theme.sampler_pad_window.kit_button_bg });
+                let trash_button = egui::Button::new(trash_button_text).fill(if trash_mode {
+                    app.theme.sampler_pad_window.trash_mode_active_bg
+                } else {
+                    app.theme.sampler_pad_window.kit_button_bg
+                });
                 if ui.add(trash_button).clicked() {
                     trash_mode = !trash_mode;
                 }
                 ui.separator();
 
-                let save_button = Button::new("Save Kit").fill(app.theme.sampler_pad_window.kit_button_bg);
+                let save_button =
+                    Button::new("Save Kit").fill(app.theme.sampler_pad_window.kit_button_bg);
                 if ui.add(save_button).clicked() {
                     if let Some(config_dir) = settings::get_config_dir() {
                         let kits_dir = config_dir.join("Kits");
-                        if let Some(path) = FileDialog::new().add_filter("json", &["json"]).set_directory(&kits_dir).save_file() {
+                        if let Some(path) = FileDialog::new()
+                            .add_filter("json", &["json"])
+                            .set_directory(&kits_dir)
+                            .save_file()
+                        {
                             let pads = std::array::from_fn(|i| {
                                 let path = app.sampler_pad_info[i].as_ref().map(|s_ref| {
-                                    if let Ok(relative_path) = s_ref.path.strip_prefix(&config_dir) {
+                                    if let Ok(relative_path) = s_ref.path.strip_prefix(&config_dir)
+                                    {
                                         return relative_path.to_path_buf();
                                     }
                                     s_ref.path.clone()
@@ -354,11 +610,16 @@ pub fn draw_sample_pad_window(app: &mut CypherApp, ctx: &egui::Context) {
                     }
                 }
 
-                let load_button = Button::new("Load Kit").fill(app.theme.sampler_pad_window.kit_button_bg);
+                let load_button =
+                    Button::new("Load Kit").fill(app.theme.sampler_pad_window.kit_button_bg);
                 if ui.add(load_button).clicked() {
                     if let Some(config_dir) = settings::get_config_dir() {
                         let kits_dir = config_dir.join("Kits");
-                        if let Some(path) = FileDialog::new().add_filter("json", &["json"]).set_directory(kits_dir).pick_file() {
+                        if let Some(path) = FileDialog::new()
+                            .add_filter("json", &["json"])
+                            .set_directory(kits_dir)
+                            .pick_file()
+                        {
                             app.load_kit(&path);
                         }
                     }
@@ -373,45 +634,59 @@ pub fn draw_sample_pad_window(app: &mut CypherApp, ctx: &egui::Context) {
             let size_vec = vec2(pad_size, pad_size);
             let mut sample_to_load: Option<(usize, SampleRef)> = None;
 
-            egui::Grid::new("sample_pad_grid").spacing([spacing, spacing]).show(ui, |ui| {
-                for i in 0..16 {
-                    let visual_row = i / 4;
-                    let visual_col = i % 4;
-                    let logical_pad_index = (3 - visual_row) * 4 + visual_col;
-                    let is_active_editor = active_pad_editor == Some(logical_pad_index);
+            egui::Grid::new("sample_pad_grid")
+                .spacing([spacing, spacing])
+                .show(ui, |ui| {
+                    for i in 0..16 {
+                        let visual_row = i / 4;
+                        let visual_col = i % 4;
+                        let logical_pad_index = (3 - visual_row) * 4 + visual_col;
+                        let is_active_editor = active_pad_editor == Some(logical_pad_index);
 
-                    let response = draw_pad(ui, logical_pad_index, app, size_vec, current_playing_mask, &mut flash_timers, trash_mode, is_active_editor);
+                        let response = draw_pad(
+                            ui,
+                            logical_pad_index,
+                            app,
+                            size_vec,
+                            current_playing_mask,
+                            &mut flash_timers,
+                            trash_mode,
+                            is_active_editor,
+                        );
 
-                    if response.clicked() {
-                        if trash_mode {
-                            app.send_command(AudioCommand::ClearSample { pad_index: logical_pad_index });
-                            app.sampler_pad_info[logical_pad_index] = None;
-                            app.sampler_pad_fx_settings[logical_pad_index] = SamplerPadFxSettings::default();
-                        } else {
-                            if active_pad_editor == Some(logical_pad_index) {
-                                active_pad_editor = None;
+                        if response.clicked() {
+                            if trash_mode {
+                                app.send_command(AudioCommand::ClearSample {
+                                    pad_index: logical_pad_index,
+                                });
+                                app.sampler_pad_info[logical_pad_index] = None;
+                                app.sampler_pad_fx_settings[logical_pad_index] =
+                                    SamplerPadFxSettings::default();
                             } else {
-                                active_pad_editor = Some(logical_pad_index);
-                            }
-                        }
-                    }
-
-                    if !trash_mode {
-                        let is_hovered = ui.rect_contains_pointer(response.rect);
-                        if is_hovered && ui.input(|i| i.pointer.any_released()) {
-                            if let Some(asset) = DragAndDrop::take_payload::<Asset>(ui.ctx()) {
-                                if let Asset::Sample(sample_ref) = (*asset).clone() {
-                                    sample_to_load = Some((logical_pad_index, sample_ref));
+                                if active_pad_editor == Some(logical_pad_index) {
+                                    active_pad_editor = None;
+                                } else {
+                                    active_pad_editor = Some(logical_pad_index);
                                 }
                             }
                         }
-                    }
 
-                    if (i + 1) % 4 == 0 {
-                        ui.end_row();
+                        if !trash_mode {
+                            let is_hovered = ui.rect_contains_pointer(response.rect);
+                            if is_hovered && ui.input(|i| i.pointer.any_released()) {
+                                if let Some(asset) = DragAndDrop::take_payload::<Asset>(ui.ctx()) {
+                                    if let Asset::Sample(sample_ref) = (*asset).clone() {
+                                        sample_to_load = Some((logical_pad_index, sample_ref));
+                                    }
+                                }
+                            }
+                        }
+
+                        if (i + 1) % 4 == 0 {
+                            ui.end_row();
+                        }
                     }
-                }
-            });
+                });
 
             if let Some((pad_index, sample_ref)) = sample_to_load {
                 app.load_sample_for_pad(pad_index, sample_ref);
@@ -427,7 +702,6 @@ pub fn draw_sample_pad_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             ui.memory_mut(|m| m.data.insert_temp(editor_state_id, active_pad_editor));
             ui.memory_mut(|m| m.data.insert_temp(flash_timers_id, flash_timers));
-
         });
     app.sample_pad_window_open = is_open;
 }
@@ -444,7 +718,8 @@ fn draw_pad(
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
-    let is_being_dragged_over = ui.rect_contains_pointer(rect) && DragAndDrop::has_any_payload(ui.ctx());
+    let is_being_dragged_over =
+        ui.rect_contains_pointer(rect) && DragAndDrop::has_any_payload(ui.ctx());
 
     let mut is_flashing = false;
     if let Some(flash_start) = flash_timers[pad_index] {
@@ -479,12 +754,27 @@ fn draw_pad(
     };
 
     let stroke_width = if is_active_editor { 4.0 } else { 2.0 };
-    ui.painter().rect(rect, CornerRadius::from(5.0), pad_color, Stroke::new(stroke_width, outline_color), epaint::StrokeKind::Inside);
+    ui.painter().rect(
+        rect,
+        CornerRadius::from(5.0),
+        pad_color,
+        Stroke::new(stroke_width, outline_color),
+        epaint::StrokeKind::Inside,
+    );
 
     if let Some(sample) = &app.sampler_pad_info[pad_index] {
         let text_color = ui.style().visuals.text_color();
-        let name_galley = ui.painter().layout(sample.name.to_string(), egui::FontId::proportional(14.0), text_color, rect.width() - 8.0);
-        ui.painter().galley(rect.center() - (name_galley.size() / 2.0), name_galley, text_color);
+        let name_galley = ui.painter().layout(
+            sample.name.to_string(),
+            egui::FontId::proportional(14.0),
+            text_color,
+            rect.width() - 8.0,
+        );
+        ui.painter().galley(
+            rect.center() - (name_galley.size() / 2.0),
+            name_galley,
+            text_color,
+        );
     }
 
     response
@@ -511,10 +801,30 @@ fn draw_pad_fx_editor(app: &mut CypherApp, ui: &mut Ui, pad_index: usize) {
 
                     let fx = &mut app.sampler_pad_fx_settings[pad_index];
                     let mut ui_settings = AdsrUiSettings::from_settings(&fx.adsr);
-                    if ui.add(Slider::new(&mut ui_settings.attack, 0.0..=1.0).text("Attack")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut ui_settings.decay, 0.0..=1.0).text("Decay")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut ui_settings.sustain, 0.0..=1.0).text("Sustain")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut ui_settings.release, 0.0..=1.0).text("Release")).changed() { fx_changed = true; }
+                    if ui
+                        .add(Slider::new(&mut ui_settings.attack, 0.0..=1.0).text("Attack"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut ui_settings.decay, 0.0..=1.0).text("Decay"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut ui_settings.sustain, 0.0..=1.0).text("Sustain"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut ui_settings.release, 0.0..=1.0).text("Release"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
 
                     fx.adsr = AdsrSettings {
                         attack: slider_to_time(ui_settings.attack, 2.0),
@@ -536,18 +846,58 @@ fn draw_pad_fx_editor(app: &mut CypherApp, ui: &mut Ui, pad_index: usize) {
 
                     let fx = &mut app.sampler_pad_fx_settings[pad_index];
 
-                    if ui.add(Slider::new(&mut fx.volume, 0.0..=1.5).text("Volume")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut fx.pitch_semitones, -24.0..=24.0).text("Pitch")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut fx.distortion_amount, 0.0..=1.0).text("Distortion")).changed() { fx_changed = true; }
+                    if ui
+                        .add(Slider::new(&mut fx.volume, 0.0..=1.5).text("Volume"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut fx.pitch_semitones, -24.0..=24.0).text("Pitch"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut fx.distortion_amount, 0.0..=1.0).text("Distortion"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
                     ui.separator();
-                    if ui.add(Slider::new(&mut fx.reverb_mix, 0.0..=1.0).text("Reverb Mix")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut fx.reverb_size, 0.0..=1.0).text("Reverb Size")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut fx.reverb_decay, 0.0..=1.0).text("Reverb Decay")).changed() { fx_changed = true; }
-                    if ui.add(Slider::new(&mut fx.gate_close_time_ms, 0.0..=2000.0).text("Reverb Gate")).changed() { fx_changed = true; }
+                    if ui
+                        .add(Slider::new(&mut fx.reverb_mix, 0.0..=1.0).text("Reverb Mix"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut fx.reverb_size, 0.0..=1.0).text("Reverb Size"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(Slider::new(&mut fx.reverb_decay, 0.0..=1.0).text("Reverb Decay"))
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
+                    if ui
+                        .add(
+                            Slider::new(&mut fx.gate_close_time_ms, 0.0..=2000.0)
+                                .text("Reverb Gate"),
+                        )
+                        .changed()
+                    {
+                        fx_changed = true;
+                    }
 
-                    let gate_button = Button::new("Gate Reverb").fill(
-                        if fx.is_reverb_gated { theme.trash_mode_active_bg } else { theme.kit_button_bg }
-                    );
+                    let gate_button = Button::new("Gate Reverb").fill(if fx.is_reverb_gated {
+                        theme.trash_mode_active_bg
+                    } else {
+                        theme.kit_button_bg
+                    });
                     if ui.add(gate_button).clicked() {
                         fx.is_reverb_gated = !fx.is_reverb_gated;
                         fx_changed = true;

@@ -1,3 +1,5 @@
+// src/ui/mixer_view.rs
+
 use crate::app::CypherApp;
 use crate::audio_engine::AudioCommand;
 use crate::fx;
@@ -9,6 +11,8 @@ use egui::{
 };
 use std::sync::atomic::Ordering;
 
+const CLICK_DRAG_THRESHOLD: f32 = 5.0;
+
 // --- Helper Functions ---
 fn linear_to_db(linear: f32) -> f32 {
     if linear <= 1e-6 {
@@ -17,6 +21,22 @@ fn linear_to_db(linear: f32) -> f32 {
         20.0 * linear.log10()
     }
 }
+
+// --- Pitch Mapping Helper Functions ---
+const MIN_PITCH_HZ: f32 = 110.0; // A2
+const MAX_PITCH_HZ: f32 = 1760.0; // A6
+
+fn pitch_to_fader_value(pitch_hz: f32) -> f32 {
+    let normalized = (pitch_hz.clamp(MIN_PITCH_HZ, MAX_PITCH_HZ) - MIN_PITCH_HZ)
+        / (MAX_PITCH_HZ - MIN_PITCH_HZ);
+    normalized * 1.5
+}
+
+fn fader_value_to_pitch(fader_value: f32) -> f32 {
+    let normalized = fader_value / 1.5;
+    MIN_PITCH_HZ + normalized * (MAX_PITCH_HZ - MIN_PITCH_HZ)
+}
+
 
 // Custom volume fader widget (vertical)
 fn volume_fader(
@@ -166,10 +186,8 @@ pub fn horizontal_volume_fader(
         let thumb_width = 8.0;
         let thumb_x = rect.left() + rect.width() * (*value / 1.5).clamp(0.0, 1.0);
         let thumb_center = Pos2::new(thumb_x, rect.center().y);
-        let thumb_rect = Rect::from_center_size(
-            thumb_center,
-            vec2(thumb_width, rect.height() + 4.0),
-        );
+        let thumb_rect =
+            Rect::from_center_size(thumb_center, vec2(thumb_width, rect.height() + 4.0));
         painter.rect(
             thumb_rect,
             CornerRadius::from(3.0),
@@ -183,9 +201,17 @@ pub fn horizontal_volume_fader(
 }
 
 fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
-    let mut mixer_state = app.track_mixer_state.write().unwrap();
-    let track = &mut mixer_state.tracks[track_id];
     let track_color = app.theme.loopers.track_colors[track_id];
+    let mut fx_button_clicked = false;
+    let mut mute_button_clicked = false;
+    let mut solo_button_clicked = false;
+
+    // Isolate the lock and copy the data we need for drawing.
+    let (is_muted, is_soloed, mut volume) = {
+        let mixer_state = app.track_mixer_state.read().unwrap();
+        let track = &mixer_state.tracks[track_id];
+        (track.is_muted, track.is_soloed, track.volume)
+    };
 
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         // --- Track Label ---
@@ -196,48 +222,70 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
         );
         ui.add_space(4.0);
 
-        // --- FX Button ---
-        let fx_button = egui::Button::new("FX").fill(app.theme.mixer.mute_off_bg);
-        if ui.add(fx_button).clicked() {
-            app.active_fx_target = Some(fx::InsertionPoint::Looper(track_id));
-            app.fx_editor_window_open = true;
-        }
+        let available_width = ui.available_width();
+        let half_width = available_width * 0.5;
+        let fx_button_size = vec2(half_width, 20.0);
+
+        // --- FX Button (centered on its own row) ---
+        ui.horizontal(|ui| {
+            ui.add_space(half_width / 2.0); // Add spacer to center the button
+            let fx_button = egui::Button::new(RichText::new("FX").monospace().size(12.0))
+                .fill(app.theme.mixer.mute_off_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add_sized(fx_button_size, fx_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                fx_button_clicked = true;
+            }
+        });
+
         ui.add_space(2.0);
 
         // --- Mute/Solo Buttons ---
         ui.horizontal(|ui| {
             let spacing = ui.style().spacing.item_spacing.x;
-            let available_width = ui.available_width();
             let button_width = ((available_width - spacing) / 2.0).max(0.0);
             let button_size = vec2(button_width, 20.0);
 
-            let mute_button = egui::Button::new(RichText::new("M").monospace().size(12.0)).fill(
-                if track.is_muted {
-                    app.theme.mixer.mute_on_bg
-                } else {
-                    app.theme.mixer.mute_off_bg
-                },
-            );
-            if ui.add_sized(button_size, mute_button).clicked() {
-                track.is_muted = !track.is_muted;
+            let mute_button =
+                egui::Button::new(RichText::new("M").monospace().size(12.0))
+                    .fill(if is_muted {
+                        app.theme.mixer.mute_on_bg
+                    } else {
+                        app.theme.mixer.mute_off_bg
+                    })
+                    .sense(Sense::click_and_drag());
+            let response = ui.add_sized(button_size, mute_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                mute_button_clicked = true;
             }
 
-            let solo_button = egui::Button::new(RichText::new("S").monospace().size(12.0)).fill(
-                if track.is_soloed {
-                    app.theme.mixer.solo_on_bg
-                } else {
-                    app.theme.mixer.solo_off_bg
-                },
-            );
-            if ui.add_sized(button_size, solo_button).clicked() {
-                track.is_soloed = !track.is_soloed;
+            let solo_button =
+                egui::Button::new(RichText::new("S").monospace().size(12.0))
+                    .fill(if is_soloed {
+                        app.theme.mixer.solo_on_bg
+                    } else {
+                        app.theme.mixer.solo_off_bg
+                    })
+                    .sense(Sense::click_and_drag());
+            let response = ui.add_sized(button_size, solo_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                solo_button_clicked = true;
             }
         });
         ui.add_space(4.0);
 
         // --- Volume Readout ---
         let db_text = {
-            let db = linear_to_db(track.volume);
+            let db = linear_to_db(volume);
             if db.is_infinite() {
                 "-inf".to_string()
             } else {
@@ -254,58 +302,109 @@ fn draw_track_strip(ui: &mut Ui, app: &mut CypherApp, track_id: usize) {
         ui.add_space(5.0);
 
         // --- Fader ---
-        volume_fader(
+        let fader_response = volume_fader(
             ui,
-            &mut track.volume,
+            &mut volume,
             app.displayed_peak_levels[track_id],
             &app.theme,
             track_color,
             track_color, // Pass track_color for the meter as well
         );
+
+        // --- Apply Changes After Drawing ---
+        if fader_response.dragged() {
+            // Send command instead of locking here to avoid potential UI stalls
+            app.send_command(AudioCommand::SetMixerTrackVolume { track_index: track_id, volume });
+        }
     });
+
+    // --- Apply deferred button clicks after the layout is done ---
+    if fx_button_clicked {
+        app.handle_fx_button_click(fx::InsertionPoint::Looper(track_id));
+    }
+    if mute_button_clicked {
+        app.send_command(AudioCommand::ToggleMixerMute(track_id));
+    }
+    if solo_button_clicked {
+        app.send_command(AudioCommand::ToggleMixerSolo(track_id));
+    }
 }
 
 fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
     let mut vol = app.master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
     let master_fader_bg = app.theme.mixer.fader_track_bg.gamma_multiply(3.5);
+    let mut fx_button_clicked = false;
 
     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
         ui.label(RichText::new("Master").color(app.theme.mixer.label_color));
         ui.add_space(4.0);
 
-        // --- Master FX Button ---
-        let fx_button = egui::Button::new("FX").fill(app.theme.mixer.mute_off_bg);
-        if ui.add(fx_button).clicked() {
-            app.active_fx_target = Some(fx::InsertionPoint::Master);
-            app.fx_editor_window_open = true;
-        }
+        let available_width = ui.available_width();
+        let half_width = available_width * 0.5;
+        let fx_button_size = vec2(half_width, 20.0);
+
+        // --- Master FX Button (centered on its own row) ---
+        ui.horizontal(|ui| {
+            ui.add_space(half_width / 2.0);
+            let fx_button = egui::Button::new(RichText::new("FX").monospace().size(12.0))
+                .fill(app.theme.mixer.mute_off_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add_sized(fx_button_size, fx_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                fx_button_clicked = true;
+            }
+        });
         ui.add_space(2.0);
 
         match app.limiter_release_mode {
             LfoRateMode::Hz => {
-                let mut release_ms =
-                    app.limiter_release_ms.load(Ordering::Relaxed) as f32 / 1000.0;
-                if ui
-                    .add(
+                ui.scope(|ui| {
+                    let visuals = &mut ui.style_mut().visuals.widgets;
+                    visuals.inactive.bg_fill = app.theme.mixer.fader_track_bg;
+                    visuals.hovered.bg_fill = app.theme.mixer.fader_track_bg.linear_multiply(1.2);
+                    visuals.active.bg_fill = app.theme.mixer.fader_thumb_color;
+
+                    let mut release_ms =
+                        app.limiter_release_ms.load(Ordering::Relaxed) as f32 / 1000.0;
+                    if ui.add(
                         DragValue::new(&mut release_ms)
                             .speed(0.1)
                             .range(1.0..=1000.0)
                             .suffix("ms"),
                     )
-                    .changed()
-                {
-                    app.send_command(AudioCommand::SetLimiterReleaseMs(release_ms));
-                }
+                        .changed()
+                    {
+                        app.send_command(AudioCommand::SetLimiterReleaseMs(release_ms));
+                    }
+                });
             }
             LfoRateMode::Sync => {
                 const TRP: f32 = 2.0 / 3.0;
                 const DOT: f32 = 1.5;
                 let rates = [
-                    (32.0, "1/128"), (16.0 * DOT, "1/64d"), (16.0, "1/64"), (16.0 * TRP, "1/64t"),
-                    (8.0 * DOT, "1/32d"), (8.0, "1/32"), (8.0 * TRP, "1/32t"), (4.0 * DOT, "1/16d"),
-                    (4.0, "1/16"), (4.0 * TRP, "1/16t"), (2.0 * DOT, "1/8d"), (2.0, "1/8"),
-                    (2.0 * TRP, "1/8t"), (1.0 * DOT, "1/4d"), (1.0, "1/4"), (1.0 * TRP, "1/4t"),
-                    (0.5 * DOT, "1/2d"), (0.5, "1/2"), (0.5 * TRP, "1/2t"), (0.25, "1 bar"),
+                    (32.0, "1/128"),
+                    (16.0 * DOT, "1/64d"),
+                    (16.0, "1/64"),
+                    (16.0 * TRP, "1/64t"),
+                    (8.0 * DOT, "1/32d"),
+                    (8.0, "1/32"),
+                    (8.0 * TRP, "1/32t"),
+                    (4.0 * DOT, "1/16d"),
+                    (4.0, "1/16"),
+                    (4.0 * TRP, "1/16t"),
+                    (2.0 * DOT, "1/8d"),
+                    (2.0, "1/8"),
+                    (2.0 * TRP, "1/8t"),
+                    (1.0 * DOT, "1/4d"),
+                    (1.0, "1/4"),
+                    (1.0 * TRP, "1/4t"),
+                    (0.5 * DOT, "1/2d"),
+                    (0.5, "1/2"),
+                    (0.5 * TRP, "1/2t"),
+                    (0.25, "1 bar"),
                 ];
                 let mut current_rate =
                     app.limiter_release_sync_rate.load(Ordering::Relaxed) as f32 / 1_000_000.0;
@@ -318,7 +417,9 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                     .selected_text(current_label)
                     .show_ui(ui, |ui| {
                         for (rate_val, rate_label) in rates {
-                            if ui.selectable_value(&mut current_rate, rate_val, rate_label).clicked() {
+                            if ui.selectable_value(&mut current_rate, rate_val, rate_label)
+                                .clicked()
+                            {
                                 app.send_command(AudioCommand::SetLimiterReleaseSync(current_rate));
                             }
                         }
@@ -327,10 +428,14 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
         }
 
         ui.horizontal(|ui| {
-            if ui.selectable_value(&mut app.limiter_release_mode, LfoRateMode::Hz, "Hz").clicked() {
+            if ui.selectable_value(&mut app.limiter_release_mode, LfoRateMode::Hz, "Hz")
+                .clicked()
+            {
                 app.send_command(AudioCommand::SetLimiterReleaseMode(LfoRateMode::Hz));
             }
-            if ui.selectable_value(&mut app.limiter_release_mode, LfoRateMode::Sync, "Sync").clicked() {
+            if ui.selectable_value(&mut app.limiter_release_mode, LfoRateMode::Sync, "Sync")
+                .clicked()
+            {
                 app.send_command(AudioCommand::SetLimiterReleaseMode(LfoRateMode::Sync));
             }
         });
@@ -339,13 +444,17 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
 
         let is_active = app.limiter_is_active.load(Ordering::Relaxed);
         let bypass_button =
-            egui::Button::new(RichText::new("Limiter").monospace().size(12.0)).fill(if is_active {
-                app.theme.mixer.limiter_active_bg
-            } else {
-                app.theme.mixer.mute_off_bg
-            });
-
-        if ui.add(bypass_button).clicked() {
+            egui::Button::new(RichText::new("Limiter").monospace().size(12.0))
+                .fill(if is_active {
+                    app.theme.mixer.limiter_active_bg
+                } else {
+                    app.theme.mixer.mute_off_bg
+                })
+                .sense(Sense::click_and_drag());
+        let response = ui.add(bypass_button);
+        if response.clicked()
+            || (response.drag_stopped() && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+        {
             app.send_command(AudioCommand::ToggleLimiter);
         }
 
@@ -387,7 +496,9 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                 &app.theme,
                 master_fader_bg,
                 app.theme.mixer.meter_normal_color, // Use global theme color
-            ).dragged() {
+            )
+                .dragged()
+            {
                 app.send_command(AudioCommand::SetLimiterThreshold(threshold));
             }
             ui.add_space(2.0);
@@ -399,25 +510,217 @@ fn draw_master_strip(ui: &mut Ui, app: &mut CypherApp) {
                 &app.theme,
                 master_fader_bg,
                 app.theme.mixer.meter_normal_color, // Use global theme color
-            ).dragged() {
+            )
+                .dragged()
+            {
                 app.send_command(AudioCommand::SetMasterVolume(vol));
             }
         });
     });
+
+    if fx_button_clicked {
+        app.handle_fx_button_click(fx::InsertionPoint::Master);
+    }
+}
+
+fn draw_atmo_strip(ui: &mut Ui, app: &mut CypherApp) {
+    let mut vol = app.atmo_master_volume.load(Ordering::Relaxed) as f32 / 1_000_000.0;
+    let atmo_fader_bg = app.theme.mixer.fader_track_bg.gamma_multiply(3.0);
+    let mut fx_button_clicked = false;
+
+    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        ui.label(RichText::new("Atmo").color(app.theme.mixer.label_color));
+        ui.add_space(4.0);
+
+        let available_width = ui.available_width();
+        let half_width = available_width * 0.5;
+        let fx_button_size = vec2(half_width, 20.0);
+
+        ui.horizontal(|ui| {
+            ui.add_space(half_width / 2.0);
+            let fx_button = egui::Button::new(RichText::new("FX").monospace().size(12.0))
+                .fill(app.theme.mixer.mute_off_bg)
+                .sense(Sense::click_and_drag());
+            let response = ui.add_sized(fx_button_size, fx_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                fx_button_clicked = true;
+            }
+        });
+        ui.add_space(2.0);
+
+        ui.add_space(24.0); // Spacer to align with other strips
+
+        ui.add_space(4.0);
+
+        let db_text = {
+            let db = linear_to_db(vol);
+            if db.is_infinite() {
+                "-inf".to_string()
+            } else {
+                format!("{:.1}", db)
+            }
+        };
+        ui.label(
+            RichText::new(db_text)
+                .monospace()
+                .size(10.0)
+                .background_color(app.theme.mixer.fader_track_bg)
+                .color(app.theme.global_text_color),
+        );
+        ui.add_space(5.0);
+
+        if volume_fader(
+            ui,
+            &mut vol,
+            app.displayed_atmo_peak_level,
+            &app.theme,
+            atmo_fader_bg,
+            app.theme.mixer.meter_normal_color,
+        )
+            .dragged()
+        {
+            app.atmo_master_volume.store((vol * 1_000_000.0) as u32, Ordering::Relaxed);
+        }
+    });
+    if fx_button_clicked {
+        app.handle_fx_button_click(fx::InsertionPoint::Atmo);
+    }
+}
+
+fn draw_metronome_strip(ui: &mut Ui, app: &mut CypherApp) {
+    let metro_fader_bg = app.theme.mixer.fader_track_bg.gamma_multiply(3.0);
+    let mut mute_button_clicked = false;
+    let mut pitch_changed = false;
+    let mut accent_pitch_changed = false;
+    let mut volume_changed = false;
+
+    let (is_muted, mut volume, pitch_hz, accent_pitch_hz) = {
+        let mixer_state = app.track_mixer_state.read().unwrap();
+        let metro = &mixer_state.metronome;
+        (metro.is_muted, metro.volume, metro.pitch_hz, metro.accent_pitch_hz)
+    };
+
+    let mut pitch_fader_val = pitch_to_fader_value(pitch_hz);
+    let mut accent_pitch_fader_val = pitch_to_fader_value(accent_pitch_hz);
+
+    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        // --- Bottom elements ---
+        ui.label(RichText::new("Metronome").color(app.theme.mixer.label_color));
+        ui.add_space(4.0);
+
+        let available_width = ui.available_width();
+        let button_size = vec2(available_width * 0.5, 20.0);
+        ui.horizontal(|ui| {
+            ui.add_space((available_width - button_size.x) / 2.0);
+            let mute_button = egui::Button::new(RichText::new("M").monospace().size(12.0))
+                .fill(if is_muted {
+                    app.theme.mixer.mute_on_bg
+                } else {
+                    app.theme.mixer.mute_off_bg
+                })
+                .sense(Sense::click_and_drag());
+            let response = ui.add_sized(button_size, mute_button);
+            if response.clicked()
+                || (response.drag_stopped()
+                && response.drag_delta().length() < CLICK_DRAG_THRESHOLD)
+            {
+                mute_button_clicked = true;
+            }
+        });
+        ui.add_space(4.0); // Space between Mute button and labels.
+
+        // --- Labels and Readouts (in two separate rows) ---
+        let fader_width = 20.0;
+        let label_text_size = 10.0;
+        let readout_bg = app.theme.mixer.fader_track_bg;
+        let readout_text_color = app.theme.global_text_color;
+
+        // ROW 2 (Bottom): The names ("Vol", "Pit", "Acc")
+        ui.horizontal(|ui| {
+            let spacing = ui.style().spacing.item_spacing.x;
+            let total_fader_group_width = fader_width * 3.0 + spacing * 2.0;
+            let side_margin = (ui.available_width() - total_fader_group_width).max(0.0) / 2.0;
+            ui.add_space(side_margin);
+
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new("Vol").monospace().size(label_text_size))); });
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new("Pit").monospace().size(label_text_size))); });
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new("Acc").monospace().size(label_text_size))); });
+        });
+
+        // ROW 1 (Top): The values
+        ui.horizontal(|ui| {
+            let spacing = ui.style().spacing.item_spacing.x;
+            let total_fader_group_width = fader_width * 3.0 + spacing * 2.0;
+            let side_margin = (ui.available_width() - total_fader_group_width).max(0.0) / 2.0;
+            ui.add_space(side_margin);
+
+            let db_text = {
+                let db = linear_to_db(volume);
+                if db.is_infinite() { "inf".to_string() } else { format!("{:.0}", db) }
+            };
+            let pitch_text = format!("{:.0}", pitch_hz);
+            let accent_text = format!("{:.0}", accent_pitch_hz);
+
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new(db_text).monospace().size(label_text_size).background_color(readout_bg).color(readout_text_color))); });
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new(pitch_text).monospace().size(label_text_size).background_color(readout_bg).color(readout_text_color))); });
+            ui.scope(|ui| { ui.set_width(fader_width); ui.centered_and_justified(|ui| ui.label(RichText::new(accent_text).monospace().size(label_text_size).background_color(readout_bg).color(readout_text_color))); });
+        });
+
+        ui.add_space(5.0); // Space between labels and faders
+
+        // --- Top element (Faders) ---
+        let fader_layout = Layout::left_to_right(Align::Min)
+            .with_cross_align(Align::Min);
+
+        ui.with_layout(fader_layout, |ui| {
+            let spacing = ui.style().spacing.item_spacing.x;
+            let total_fader_group_width = fader_width * 3.0 + spacing * 2.0;
+            let side_margin = (ui.available_width() - total_fader_group_width).max(0.0) / 2.0;
+            ui.add_space(side_margin);
+
+            if volume_fader(ui, &mut volume, 0.0, &app.theme, metro_fader_bg, Color32::TRANSPARENT).dragged() {
+                volume_changed = true;
+            }
+            if volume_fader(ui, &mut pitch_fader_val, 0.0, &app.theme, metro_fader_bg, Color32::TRANSPARENT).dragged() {
+                pitch_changed = true;
+            }
+            if volume_fader(ui, &mut accent_pitch_fader_val, 0.0, &app.theme, metro_fader_bg, Color32::TRANSPARENT).dragged() {
+                accent_pitch_changed = true;
+            }
+        });
+    });
+
+    if mute_button_clicked { app.send_command(AudioCommand::ToggleMetronomeMute); }
+    if volume_changed { app.send_command(AudioCommand::SetMetronomeVolume(volume)); }
+    if pitch_changed {
+        let new_pitch_hz = fader_value_to_pitch(pitch_fader_val);
+        app.send_command(AudioCommand::SetMetronomePitch(new_pitch_hz));
+    }
+    if accent_pitch_changed {
+        let new_accent_pitch_hz = fader_value_to_pitch(accent_pitch_fader_val);
+        app.send_command(AudioCommand::SetMetronomeAccentPitch(new_accent_pitch_hz));
+    }
 }
 
 pub fn draw_mixer_panel(app: &mut CypherApp, ui: &mut Ui) {
-    // **FIXED**: Re-introduced ui.group() and set frame color correctly.
     let frame_style = Frame::new().fill(app.theme.mixer.panel_background);
     ui.group(|ui| {
         frame_style.show(ui, |ui| {
             ui.set_min_height(300.0);
-            ui.label(RichText::new("Mixer").monospace().color(app.theme.mixer.label_color));
+            ui.label(
+                RichText::new("Mixer")
+                    .monospace()
+                    .color(app.theme.mixer.label_color),
+            );
             ui.separator();
 
             let stroke = Stroke::new(1.0, ui.style().visuals.window_stroke.color);
 
-            ui.columns(NUM_LOOPERS + 1, |columns| {
+            ui.columns(NUM_LOOPERS + 3, |columns| {
+                // Draw Looper Tracks with separators
                 for i in 0..NUM_LOOPERS {
                     let column_ui = &mut columns[i];
                     let vline_y_range = column_ui.clip_rect().y_range();
@@ -432,7 +735,36 @@ pub fn draw_mixer_panel(app: &mut CypherApp, ui: &mut Ui) {
                         stroke,
                     );
                 }
-                draw_master_strip(&mut columns[NUM_LOOPERS], app);
+
+                // Draw Atmo Strip and its separator
+                let atmo_column_ui = &mut columns[NUM_LOOPERS];
+                let vline_y_range = atmo_column_ui.clip_rect().y_range();
+                draw_atmo_strip(atmo_column_ui, app);
+
+                // --- THIS IS THE ADDED CODE ---
+                let painter = atmo_column_ui.painter();
+                let rect = atmo_column_ui.min_rect();
+                painter.vline(
+                    rect.right() + atmo_column_ui.style().spacing.item_spacing.x / 2.0,
+                    vline_y_range,
+                    stroke,
+                );
+                // --- END OF ADDED CODE ---
+
+                // Draw Metronome Strip (no separator needed after it, as Master draws one before)
+                draw_metronome_strip(&mut columns[NUM_LOOPERS + 1], app);
+
+                // Draw Master Strip with its separator
+                let master_column_ui = &mut columns[NUM_LOOPERS + 2];
+                let vline_y_range = master_column_ui.clip_rect().y_range();
+                let painter = master_column_ui.painter();
+                let rect = master_column_ui.min_rect();
+                painter.vline(
+                    rect.left() - master_column_ui.style().spacing.item_spacing.x / 2.0,
+                    vline_y_range,
+                    stroke,
+                );
+                draw_master_strip(master_column_ui, app);
             });
         });
     });

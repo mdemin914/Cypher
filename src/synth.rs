@@ -99,7 +99,7 @@ pub trait Engine {
     fn process(
         &mut self,
         output_buffer: &mut [f32],
-        transport_len_samples: usize,
+        musical_bar_len: usize,
         midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
     );
     fn note_on(&mut self, note: u8, velocity: u8);
@@ -121,12 +121,12 @@ impl Engine for SynthEngine {
     fn process(
         &mut self,
         output_buffer: &mut [f32],
-        transport_len_samples: usize,
+        musical_bar_len: usize,
         midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
     ) {
         match self {
-            SynthEngine::Wavetable(e) => e.process(output_buffer, transport_len_samples, midi_cc_values),
-            SynthEngine::Sampler(e) => e.process(output_buffer, transport_len_samples, midi_cc_values),
+            SynthEngine::Wavetable(e) => e.process(output_buffer, musical_bar_len, midi_cc_values),
+            SynthEngine::Sampler(e) => e.process(output_buffer, musical_bar_len, midi_cc_values),
         }
     }
 
@@ -217,11 +217,11 @@ impl Synth {
         &mut self,
         engine_0_output: &mut [f32],
         engine_1_output: &mut [f32],
-        transport_len_samples: usize,
+        musical_bar_len: usize,
         midi_cc_values: &Arc<[[AtomicU32; 128]; 16]>,
     ) {
-        self.engines[0].process(engine_0_output, transport_len_samples, midi_cc_values);
-        self.engines[1].process(engine_1_output, transport_len_samples, midi_cc_values);
+        self.engines[0].process(engine_0_output, musical_bar_len, midi_cc_values);
+        self.engines[1].process(engine_1_output, musical_bar_len, midi_cc_values);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8) {

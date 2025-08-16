@@ -1,4 +1,5 @@
 // src/ui/options_view.rs
+
 use crate::app::CypherApp;
 use cpal::traits::DeviceTrait;
 use egui::{Button, Checkbox, DragValue, Frame, Grid, RichText, ScrollArea, Slider, Window};
@@ -10,6 +11,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
     let mut apply_was_clicked = false;
     let mut host_changed = false;
     let mut close_options_and_open_about = false;
+    let mut export_codebase_clicked = false; // <-- 1. FLAG DECLARED HERE
 
     Window::new("Options")
         .open(&mut app.options_window_open)
@@ -34,6 +36,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                 .show(ui, |ui| {
                     ScrollArea::vertical()
+                        .id_salt("midi_input_devices_scroll")
                         .max_height(80.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
@@ -46,6 +49,7 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
                                     if ui.add(Checkbox::new(&mut is_enabled, name)).changed() {
                                         if is_enabled {
                                             app.enabled_midi_ports.insert(name.clone());
+                                            app.settings.midi_device_control_channels.entry(name.clone()).or_insert(9);
                                         } else {
                                             app.enabled_midi_ports.remove(name);
                                         }
@@ -58,21 +62,85 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             ui.add_space(8.0);
 
-            Grid::new("midi_channel_grid")
-                .num_columns(2)
-                .spacing([120.0, 8.0])
-                .show(ui, |ui|{
-                    let mut channel = app.selected_midi_channel.load(Ordering::Relaxed) + 1;
-                    ui.horizontal(|ui| {
-                        ui.add(Slider::new(&mut channel, 1..=16).show_value(false));
-                        ui.add(DragValue::new(&mut channel).range(1..=16).speed(0.1));
-                    });
-                    app.selected_midi_channel.store(channel - 1, Ordering::Relaxed);
-                    ui.label(RichText::new("MIDI Channel").color(app.theme.options_window.label_color));
-                    ui.end_row();
+            // 1. Audio Note Channel
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Synth/Sampler Note Channel").color(app.theme.options_window.label_color));
+                let mut channel = app.audio_note_channel.load(Ordering::Relaxed) + 1;
+                ui.horizontal(|ui| {
+                    let slider_response = ui.add(Slider::new(&mut channel, 1..=16).show_value(false));
+                    let drag_response = ui.add(DragValue::new(&mut channel).range(1..=16).speed(0.1));
+                    if slider_response.changed() || drag_response.changed() {
+                        app.audio_note_channel.store(channel - 1, Ordering::Relaxed);
+                        midi_ports_changed = true; // RECONNECT
+                    }
                 });
+            });
 
             ui.add_space(4.0);
+
+            // 2. Per-Device Control Channel
+            if !app.settings.midi_device_control_channels.is_empty() {
+                ui.label(RichText::new("Device Control Channels (for Note Triggers)").color(app.theme.options_window.label_color));
+                Frame::group(ui.style())
+                    .inner_margin(egui::Margin::same(6))
+                    .fill(app.theme.options_window.widget_bg.linear_multiply(0.8))
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .show(ui, |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("device_control_channels_scroll")
+                            .max_height(80.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                Grid::new("device_control_channels_grid")
+                                    .num_columns(3)
+                                    .show(ui, |ui| {
+                                        let configured_ports: Vec<_> = app.settings.midi_device_control_channels.keys().cloned().collect();
+                                        let mut port_to_remove = None;
+
+                                        for port_name in configured_ports {
+                                            let is_connected = app.enabled_midi_ports.contains(&port_name);
+                                            let text_color = if is_connected { app.theme.options_window.label_color } else { app.theme.options_window.label_color.linear_multiply(0.5) };
+                                            ui.label(RichText::new(&port_name).color(text_color));
+
+                                            let mut control_channel = app.settings.midi_device_control_channels.get(&port_name).copied().unwrap_or(9) + 1;
+
+                                            if ui.add(DragValue::new(&mut control_channel).range(1..=16).speed(0.1)).changed() {
+                                                app.settings.midi_device_control_channels.insert(port_name.clone(), control_channel - 1);
+                                                midi_ports_changed = true; // RECONNECT
+                                            }
+
+                                            if ui.button("✖").on_hover_text("Remove this device's control channel setting").clicked() {
+                                                port_to_remove = Some(port_name.clone());
+                                                midi_ports_changed = true; // RECONNECT
+                                            }
+                                            ui.end_row();
+                                        }
+
+                                        if let Some(port) = port_to_remove {
+                                            app.settings.midi_device_control_channels.remove(&port);
+                                        }
+                                    });
+                            });
+                    });
+            }
+
+            ui.add_space(8.0);
+
+            // 3. Relative Encoder Multiplier
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Relative Encoder Sensitivity").color(app.theme.options_window.label_color));
+                let slider = Slider::new(&mut app.settings.relative_encoder_multiplier, 0.1..=10.0)
+                    .logarithmic(true)
+                    .show_value(true)
+                    .prefix("x");
+                if ui.add(slider).on_hover_text("Multiplier for how fast relative/infinite MIDI encoders change parameter values.").changed() {
+                    midi_ports_changed = true; // RECONNECT
+                }
+            });
+
+            ui.add_space(8.0);
+
             if ui.add(Button::new("MIDI Control Setup").fill(app.theme.options_window.widget_bg)).clicked() {
                 app.midi_mapping_window_open = true;
             }
@@ -223,8 +291,15 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
 
             ui.horizontal(|ui| {
                 if ui.add(Button::new("About Cypher").fill(app.theme.options_window.widget_bg)).clicked() {
-                    // This now sets our local flag instead of borrowing `app` mutably.
                     close_options_and_open_about = true;
+                }
+
+                // <-- 2. BUTTON SETS THE FLAG
+                if ui.add(Button::new("Export Codebase...").fill(app.theme.options_window.widget_bg))
+                    .on_hover_text("Saves the entire Rust codebase to a single .txt file")
+                    .clicked()
+                {
+                    export_codebase_clicked = true;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -236,7 +311,10 @@ pub fn draw_options_window(app: &mut CypherApp, ctx: &egui::Context) {
             });
         });
 
-    // --- Actions are now performed AFTER the window's mutable borrow is released ---
+    // <-- 3. FLAG IS CHECKED AND FUNCTION IS CALLED HERE
+    if export_codebase_clicked {
+        app.export_codebase_to_txt();
+    }
 
     if close_options_and_open_about {
         app.about_window_open = true;

@@ -21,6 +21,7 @@ mod wavetable_engine;
 mod sampler_engine;
 mod theory;
 mod slicer;
+mod atmo;
 
 use crate::app::CypherApp;
 
