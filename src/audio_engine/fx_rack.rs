@@ -15,6 +15,8 @@ pub struct FxRack {
     mod_routings: Vec<fx::ModulationRoutingData>,
     wet_dry_mix: Arc<AtomicU32>, // Now an atomic for real-time control
     mod_outputs: Vec<f32>,       // Buffer to store current mod outputs
+    // NEW: Pre-allocated buffer for modulation values to avoid heap allocation in process loop.
+    mod_values_buffer: BTreeMap<String, f32>,
 }
 
 impl FxRack {
@@ -69,6 +71,8 @@ impl FxRack {
             components,
             mod_routings,
             wet_dry_mix, // Use the persistent atomic passed in
+            // NEW: Initialize the buffer. This is a safe, one-time allocation.
+            mod_values_buffer: BTreeMap::new(),
         }
     }
 
@@ -94,17 +98,21 @@ impl FxRack {
             }
 
             for (i, component) in self.components.iter_mut().enumerate() {
-                let mut mods = BTreeMap::new();
+                // MODIFIED: Clear the pre-allocated buffer instead of creating a new one.
+                self.mod_values_buffer.clear();
                 for route in &self.mod_routings {
                     if route.target_component_index == i {
                         let mod_signal =
                             self.mod_outputs[route.source_component_index] * route.amount;
-                        *mods
+                        // MODIFIED: Use the pre-allocated buffer.
+                        *self
+                            .mod_values_buffer
                             .entry(route.target_parameter_name.clone())
                             .or_insert(0.0) += mod_signal;
                     }
                 }
-                wet_output = component.process_audio(wet_output, &mods);
+                // MODIFIED: Pass the pre-allocated buffer.
+                wet_output = component.process_audio(wet_output, &self.mod_values_buffer);
             }
             *sample = (dry_sample * dry_mix) + wet_output;
         }

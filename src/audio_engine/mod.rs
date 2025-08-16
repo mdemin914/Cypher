@@ -45,6 +45,8 @@ use self::sampler_pad::SamplerPad;
 const LOOPER_ARM_THRESHOLD: f32 = 0.05;
 const HIGH_RES_CHUNK_SIZE: usize = 256;
 const PARAM_SCALER: f32 = 1_000_000.0;
+// NEW: Define a safe maximum buffer size to pre-allocate memory.
+const MAX_BUFFER_SIZE: usize = 2048;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum TransportState {
@@ -100,6 +102,7 @@ pub struct AudioEngine {
     output_recording_buffer: Option<Vec<f32>>,
     pub midi_cc_values: Arc<[[AtomicU32; 128]; 16]>,
     pub should_toggle_record: Arc<AtomicBool>,
+    // MODIFIED: Pre-allocated buffers.
     engine_0_buffer: Vec<f32>,
     engine_1_buffer: Vec<f32>,
     atmo_buffer: Vec<f32>,
@@ -218,10 +221,11 @@ impl AudioEngine {
             output_recording_buffer: None,
             midi_cc_values,
             should_toggle_record,
-            engine_0_buffer: vec![0.0; 512],
-            engine_1_buffer: vec![0.0; 512],
-            atmo_buffer: vec![0.0; 512],
-            atmo_stereo_buffer: vec![[0.0; 2]; 512],
+            // MODIFIED: Initialize buffers to their maximum safe size.
+            engine_0_buffer: vec![0.0; MAX_BUFFER_SIZE],
+            engine_1_buffer: vec![0.0; MAX_BUFFER_SIZE],
+            atmo_buffer: vec![0.0; MAX_BUFFER_SIZE],
+            atmo_stereo_buffer: vec![[0.0; 2]; MAX_BUFFER_SIZE],
             fx_wet_dry_mixes,
             looper_fx_racks: Default::default(),
             synth_fx_racks: Default::default(),
@@ -894,19 +898,15 @@ impl AudioEngine {
 
     pub fn process_buffer(&mut self, mic_buffer: &mut [f32]) -> Vec<f32> {
         let start_time = Instant::now();
-        let num_samples = mic_buffer.len();
+        // NEW: Safety check. Cap the number of samples to process at our pre-allocated max size.
+        let num_samples = mic_buffer.len().min(MAX_BUFFER_SIZE);
         let mut output_buffer = vec![0.0; num_samples];
         let mut transport_len = self.transport_len_samples.load(Ordering::Relaxed);
         let mut transport_playhead = self.transport_playhead.load(Ordering::Relaxed);
         let transport_is_playing = self.transport_is_playing.load(Ordering::Relaxed);
         let mut playing_mask = 0u16;
 
-        if self.engine_0_buffer.len() != num_samples {
-            self.engine_0_buffer.resize(num_samples, 0.0);
-            self.engine_1_buffer.resize(num_samples, 0.0);
-            self.atmo_buffer.resize(num_samples, 0.0);
-            self.atmo_stereo_buffer.resize(num_samples, [0.0; 2]);
-        }
+        // REMOVED: The entire block that resized buffers has been deleted.
 
         let multiplier = self.tempo_multiplier.load(Ordering::Relaxed) as f32 / PARAM_SCALER;
         let musical_bar_len = if transport_len > 0 && multiplier > 0.0 {
@@ -916,34 +916,41 @@ impl AudioEngine {
         };
 
         if self.synth_is_active.load(Ordering::Relaxed) {
+            // MODIFIED: Pass slices instead of the whole buffer.
             self.synth.process(
-                &mut self.engine_0_buffer,
-                &mut self.engine_1_buffer,
+                &mut self.engine_0_buffer[..num_samples],
+                &mut self.engine_1_buffer[..num_samples],
                 musical_bar_len,
                 &self.midi_cc_values,
             );
         } else {
-            self.engine_0_buffer.fill(0.0);
-            self.engine_1_buffer.fill(0.0);
+            // MODIFIED: Use a slice.
+            self.engine_0_buffer[..num_samples].fill(0.0);
+            self.engine_1_buffer[..num_samples].fill(0.0);
         }
 
         // --- Atmo Engine Processing ---
-        self.atmo_engine.process(&mut self.atmo_stereo_buffer);
-        for (i, frame) in self.atmo_stereo_buffer.iter().enumerate() {
+        // MODIFIED: Use slices.
+        self.atmo_engine
+            .process(&mut self.atmo_stereo_buffer[..num_samples]);
+        for (i, frame) in self.atmo_stereo_buffer[..num_samples].iter().enumerate() {
             self.atmo_buffer[i] = (frame[0] + frame[1]) * 0.5;
         }
 
         if let Some(rack) = &mut self.atmo_fx_rack {
-            rack.process_buffer(&mut self.atmo_buffer);
+            // MODIFIED: Use a slice.
+            rack.process_buffer(&mut self.atmo_buffer[..num_samples]);
         }
         let mut atmo_peak_buffer = 0.0f32;
 
         // --- Apply Synth FX ---
         if let Some(rack) = &mut self.synth_fx_racks[0] {
-            rack.process_buffer(&mut self.engine_0_buffer);
+            // MODIFIED: Use a slice.
+            rack.process_buffer(&mut self.engine_0_buffer[..num_samples]);
         }
         if let Some(rack) = &mut self.synth_fx_racks[1] {
-            rack.process_buffer(&mut self.engine_1_buffer);
+            // MODIFIED: Use a slice.
+            rack.process_buffer(&mut self.engine_1_buffer[..num_samples]);
         }
 
         let mut engine_peak_buffers = [0.0f32; 2];
@@ -997,7 +1004,8 @@ impl AudioEngine {
                 if quarter_note_len > 0 && self.metronome_playhead % quarter_note_len == 0 {
                     let beat_in_bar = (self.metronome_playhead / quarter_note_len) % 4;
                     if beat_in_bar == 0 {
-                        self.metronome.trigger(mixer_state.metronome.accent_pitch_hz);
+                        self.metronome
+                            .trigger(mixer_state.metronome.accent_pitch_hz);
                     } else {
                         self.metronome.trigger(mixer_state.metronome.pitch_hz);
                     }
@@ -1034,7 +1042,9 @@ impl AudioEngine {
                                 looper.shared_state.set_length_in_cycles(0);
                                 looper.shared_state.set_playhead(0);
                             }
-                            LooperState::Playing => looper.shared_state.set(LooperState::Overdubbing),
+                            LooperState::Playing => {
+                                looper.shared_state.set(LooperState::Overdubbing)
+                            }
                             LooperState::Overdubbing => {
                                 looper.shared_state.set(LooperState::Playing)
                             }
@@ -1052,7 +1062,8 @@ impl AudioEngine {
                 }
                 let mut loopers_to_clear = Vec::new();
                 for (id, looper) in self.loopers.iter_mut().enumerate() {
-                    if looper.stop_is_queued && looper.shared_state.get() == LooperState::Recording {
+                    if looper.stop_is_queued && looper.shared_state.get() == LooperState::Recording
+                    {
                         if looper.samples_since_high_res_update > 0 {
                             looper
                                 .high_res_summary
@@ -1300,9 +1311,7 @@ impl AudioEngine {
                             if transport_is_playing && is_audible {
                                 looper_output += sample_to_play * track_state.volume;
                             }
-                            if state == LooperState::Overdubbing
-                                && transport_is_playing
-                            {
+                            if state == LooperState::Overdubbing && transport_is_playing {
                                 looper.audio[looper.playhead] =
                                     (looper.audio[looper.playhead] + record_input)
                                         .clamp(-1.0, 1.0);
@@ -1503,7 +1512,9 @@ impl AudioEngine {
                     }
                 }
             }
-            ControllableParameter::SynthMasterVolume => adjust_atomic_volume(&self.synth_master_volume),
+            ControllableParameter::SynthMasterVolume => {
+                adjust_atomic_volume(&self.synth_master_volume)
+            }
             ControllableParameter::SamplerMasterVolume => adjust_atomic_volume(&self.sampler_volume),
             ControllableParameter::MasterVolume => adjust_atomic_volume(&self.master_volume),
             ControllableParameter::LimiterThreshold => adjust_atomic(&self.limiter_threshold),
@@ -1515,10 +1526,13 @@ impl AudioEngine {
             ControllableParameter::MetronomePitch => {
                 if let Ok(mut mixer) = self.track_mixer_state.write() {
                     let range = 2000.0 - 220.0;
-                    mixer.metronome.pitch_hz = (mixer.metronome.pitch_hz + delta * range).clamp(220.0, 2000.0);
+                    mixer.metronome.pitch_hz =
+                        (mixer.metronome.pitch_hz + delta * range).clamp(220.0, 2000.0);
                 }
             }
-            ControllableParameter::AtmoMasterVolume => adjust_atomic_volume(&self.atmo_master_volume),
+            ControllableParameter::AtmoMasterVolume => {
+                adjust_atomic_volume(&self.atmo_master_volume)
+            }
             ControllableParameter::AtmoLayerVolume(idx) => {
                 if let Some(vol) = self.atmo_engine.layer_volumes.get(idx) {
                     adjust_atomic_volume(vol);

@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+// NEW: Define a safe maximum buffer size to pre-allocate memory.
+const MAX_BUFFER_SIZE: usize = 2048;
+
 /// Manages reading a WAV file from disk in a separate thread and feeding it to the audio thread.
 /// Now supports seeking and limiting the number of samples read.
 struct StreamingWavReader {
@@ -278,23 +281,25 @@ impl AtmoVoice {
             AtmoVoiceState::FadingIn => {
                 if self.fade_samples_processed < self.fade_samples_total {
                     self.fade_samples_processed += 1;
-                    self.fade_gain = self.fade_samples_processed as f32 / self.fade_samples_total as f32;
+                    self.fade_gain =
+                        self.fade_samples_processed as f32 / self.fade_samples_total as f32;
                 } else {
                     self.fade_gain = 1.0;
                     self.state = AtmoVoiceState::Playing;
                 }
-            },
+            }
             AtmoVoiceState::FadingOut => {
                 if self.fade_samples_processed < self.fade_samples_total {
                     self.fade_samples_processed += 1;
-                    self.fade_gain = 1.0 - (self.fade_samples_processed as f32 / self.fade_samples_total as f32);
+                    self.fade_gain =
+                        1.0 - (self.fade_samples_processed as f32 / self.fade_samples_total as f32);
                 } else {
                     self.fade_gain = 0.0;
                     self.state = AtmoVoiceState::Idle;
                     self.stream_reader = None; // Stop reading from disk
                     return [0.0, 0.0];
                 }
-            },
+            }
             _ => {} // Playing or Idle, gain is stable
         }
 
@@ -309,7 +314,10 @@ impl AtmoVoice {
                 self.samples_played += 1;
                 sample = self.filter.process(sample, filter_coeff);
                 let final_sample = sample * self.fade_gain;
-                [final_sample * self.current_pan[0], final_sample * self.current_pan[1]]
+                [
+                    final_sample * self.current_pan[0],
+                    final_sample * self.current_pan[1],
+                ]
             } else {
                 if self.is_finished.load(Ordering::Relaxed) {
                     self.state = AtmoVoiceState::Idle;
@@ -336,7 +344,9 @@ impl AtmoLayerProcessor {
     pub fn new(sample_rate: f32) -> Self {
         const NUM_VOICES_PER_LAYER: usize = 8;
         Self {
-            voices: (0..NUM_VOICES_PER_LAYER).map(|_| AtmoVoice::new()).collect(),
+            voices: (0..NUM_VOICES_PER_LAYER)
+                .map(|_| AtmoVoice::new())
+                .collect(),
             samples: Vec::new(),
             next_trigger_countdown: 0,
             sample_rate,
@@ -352,11 +362,16 @@ impl AtmoLayerProcessor {
     }
 
     fn start_new_fragment_for_voice(&mut self, voice_index: usize, params: &AtmoLayerParams) {
-        if self.samples.is_empty() { return; }
-        let (path, total_length) = self.samples[(rand::random::<f32>() * self.samples.len() as f32) as usize].clone();
+        if self.samples.is_empty() {
+            return;
+        }
+        let (path, total_length) =
+            self.samples[(rand::random::<f32>() * self.samples.len() as f32) as usize].clone();
 
         let fragment_length = (total_length as f32 * params.fragment_length).ceil() as u32;
-        if fragment_length == 0 { return; }
+        if fragment_length == 0 {
+            return;
+        }
 
         let safe_start = (total_length as f32 * 0.01).ceil() as u32;
         let safe_end = (total_length as f32 * 0.99).floor() as u32;
@@ -372,21 +387,41 @@ impl AtmoLayerProcessor {
         let crossfade_samples = (1.0 * self.sample_rate) as u32;
 
         if let Some(voice) = self.voices.get_mut(voice_index) {
-            voice.start(path, params.playback_rate, pan, self.sample_rate, Some(random_start), Some(fragment_length), crossfade_samples);
+            voice.start(
+                path,
+                params.playback_rate,
+                pan,
+                self.sample_rate,
+                Some(random_start),
+                Some(fragment_length),
+                crossfade_samples,
+            );
         }
     }
 
     fn start_new_one_shot_for_voice(&mut self, voice_index: usize, params: &AtmoLayerParams) {
-        if self.samples.is_empty() { return; }
-        let (path, total_length) = self.samples[(rand::random::<f32>() * self.samples.len() as f32) as usize].clone();
+        if self.samples.is_empty() {
+            return;
+        }
+        let (path, total_length) =
+            self.samples[(rand::random::<f32>() * self.samples.len() as f32) as usize].clone();
 
         let playback_len = (total_length as f32 / params.playback_rate).ceil() as u32;
-        self.next_trigger_countdown = (playback_len as f32 * (1.0 - params.density.clamp(-1.0, 1.0))) as i64;
+        self.next_trigger_countdown =
+            (playback_len as f32 * (1.0 - params.density.clamp(-1.0, 1.0))) as i64;
 
         let pan = (rand::random::<f32>() * 2.0 - 1.0) * params.pan_randomness;
 
         if let Some(voice) = self.voices.get_mut(voice_index) {
-            voice.start(path, params.playback_rate, pan, self.sample_rate, Some(0), None, 0);
+            voice.start(
+                path,
+                params.playback_rate,
+                pan,
+                self.sample_rate,
+                Some(0),
+                None,
+                0,
+            );
         }
     }
 
@@ -406,7 +441,9 @@ impl AtmoLayerProcessor {
 
                 // Check if any playing voice is about to end
                 for (voice_index, voice) in self.voices.iter().enumerate() {
-                    if voice.state == AtmoVoiceState::Playing && (voice.samples_to_play - voice.samples_played) <= crossfade_samples {
+                    if voice.state == AtmoVoiceState::Playing
+                        && (voice.samples_to_play - voice.samples_played) <= crossfade_samples
+                    {
                         voice_to_fade_out = Some(voice_index);
                         break;
                     }
@@ -428,8 +465,8 @@ impl AtmoLayerProcessor {
                         self.start_new_fragment_for_voice(voice_index, params);
                     }
                 }
-
-            } else { // TriggeredEvents Mode
+            } else {
+                // TriggeredEvents Mode
                 if self.next_trigger_countdown <= 0 {
                     if let Some(voice_index) = self.voices.iter().position(|v| !v.is_active()) {
                         self.start_new_one_shot_for_voice(voice_index, params);
@@ -442,7 +479,9 @@ impl AtmoLayerProcessor {
             let mut frame = [0.0, 0.0];
 
             for voice in self.voices.iter_mut() {
-                if !voice.is_active() { continue; }
+                if !voice.is_active() {
+                    continue;
+                }
                 let voice_frame = voice.process(filter_coeff);
                 frame[0] += voice_frame[0];
                 frame[1] += voice_frame[1];
@@ -467,7 +506,6 @@ impl AtmoSceneProcessor {
         }
     }
 
-
     /// Processes all 4 layers, applying direct volume controls, and writes the result to a buffer.
     pub fn process(
         &mut self,
@@ -480,7 +518,8 @@ impl AtmoSceneProcessor {
 
         for (i, layer_processor) in self.layers.iter_mut().enumerate() {
             let mut params = scene_params.layers[i].params;
-            let direct_layer_vol = layer_volumes[i].load(Ordering::Relaxed) as f32 / super::PARAM_SCALER;
+            let direct_layer_vol =
+                layer_volumes[i].load(Ordering::Relaxed) as f32 / super::PARAM_SCALER;
             params.volume *= direct_layer_vol; // Apply the direct volume fader from the mixer
             layer_processor.process(&params, output_buffer); // This adds its output to the buffer
         }
@@ -552,7 +591,8 @@ impl AtmoEngine {
             scenes: Default::default(),
             xy_coords,
             layer_volumes,
-            scene_buffers: Default::default(),
+            // MODIFIED: Initialize scene buffers to their maximum safe size.
+            scene_buffers: std::array::from_fn(|_| vec![[0.0; 2]; MAX_BUFFER_SIZE]),
             auto_gain: AtmoAutoGain::new(sample_rate),
         }
     }
@@ -581,12 +621,7 @@ impl AtmoEngine {
     }
 
     pub fn process(&mut self, output_buffer: &mut [[f32; 2]]) {
-        // Ensure scene buffers are correctly sized
-        for buffer in &mut self.scene_buffers {
-            if buffer.len() != output_buffer.len() {
-                buffer.resize(output_buffer.len(), [0.0, 0.0]);
-            }
-        }
+        // REMOVED: The entire block that resized scene_buffers has been deleted.
 
         const MIX_RADIUS: f32 = 0.5;
 
@@ -609,16 +644,17 @@ impl AtmoEngine {
             self.scene_processors[corner_index].process(
                 &self.scenes[corner_index],
                 &self.layer_volumes,
-                output_buffer,
+                output_buffer, // Process directly into the output
             );
         } else {
             // Inside the radius: 4-way audio interpolation
             // 1. Process each scene into its own temporary buffer
             for i in 0..4 {
+                // MODIFIED: Pass a slice of the correct length to the processor.
                 self.scene_processors[i].process(
                     &self.scenes[i],
                     &self.layer_volumes,
-                    &mut self.scene_buffers[i],
+                    &mut self.scene_buffers[i][..output_buffer.len()],
                 );
             }
 
@@ -628,6 +664,7 @@ impl AtmoEngine {
             // 3. Blend the four scene buffers into the main output buffer
             for i in 0..output_buffer.len() {
                 // Bilinear interpolation of the audio signal from the 4 scene buffers
+                // MODIFIED: Index into the slices correctly.
                 let top_l = Self::lerp(self.scene_buffers[0][i][0], self.scene_buffers[1][i][0], x);
                 let top_r = Self::lerp(self.scene_buffers[0][i][1], self.scene_buffers[1][i][1], x);
                 let bot_l = Self::lerp(self.scene_buffers[2][i][0], self.scene_buffers[3][i][0], x);
